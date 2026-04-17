@@ -2,8 +2,13 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 import threading
+
+try:
+    import sqlite3
+    _SQLITE3_AVAILABLE = True
+except ImportError:
+    _SQLITE3_AVAILABLE = False
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -126,6 +131,7 @@ class NullAuditStore:
         detail_json: str | None = None,
     ) -> None:
         pass
+
 
 
 class AuditStore:
@@ -657,6 +663,10 @@ class AuditStore:
         with self._lock:
             self._conn.close()
 
+
+# 若 sqlite3 不可用（如在某些精简编译的 Python 上），AuditStore 降级为 NullAuditStore
+if not _SQLITE3_AVAILABLE:
+    AuditStore = NullAuditStore  # type: ignore[misc]
 
 # ----- pnl_jsonl.py -----
 
