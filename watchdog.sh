@@ -70,12 +70,17 @@ while true; do
         # 重启系统
         restart_system
 
+        # 发送升级通知邮件
+        "$VENV_PYTHON" "$PROJECT_DIR/notify.py" upgrade >> "$LOG_FILE" 2>&1 &
+
         LAST_COMMIT="$REMOTE_COMMIT"
     else
         # 检查系统是否还活着，不活着就重启
         if ! pgrep -f "$RUN_SCRIPT" > /dev/null; then
             log "⚠️  系统意外退出，自动重启..."
             restart_system
+            # 发送崩溃告警邮件
+            "$VENV_PYTHON" "$PROJECT_DIR/notify.py" crash >> "$LOG_FILE" 2>&1 &
         fi
     fi
 done
