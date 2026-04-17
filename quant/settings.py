@@ -459,8 +459,8 @@ class D:
     GRID_ATR_MULT = 0.8                # 格宽 = ATR × 此系数
     GRID_MIN_SPACING_PCT = 0.0012      # 最小格宽 12bps（>7bps 手续费，确保盈利）
     GRID_MAX_SPACING_PCT = 0.0040      # 最大格宽 40bps（过宽成交率低）
-    GRID_WHOLE_STOP_USDT = 3.0         # 整体止损：总浮亏超此值市价平仓
-    GRID_DAILY_STOP_USDT = 5.0         # 日亏损上限：超此值当日停止
+    GRID_WHOLE_STOP_USDT = 2.0         # 整体止损：总浮亏超此值市价平仓（目标1-2U/天，止损不超过1天利润）
+    GRID_DAILY_STOP_USDT = 3.0         # 日亏损上限：超此值当日停止（收紧至3U，避免一天亏掉3天利润）
     GRID_RECENTER_MULT = 1.5           # 价格偏离 > 1.5×格宽 时重置网格中心（原2.5，缩短防止挂单穿叉）
     GRID_ENTRY_TIMEOUT_SEC = 120.0     # 入场单 2 分钟未成交自动撤销
     GRID_COOLDOWN_SEC = 300.0          # 整体止损后冷静期（秒）
@@ -469,8 +469,8 @@ class D:
     GRID_LEVERAGE = 10.0               # 网格策略杠杆
     GRID_TD_MODE = "isolated"          # 逐仓模式
     GRID_WARMUP_TICKS = 60             # 热身期 tick 数（60 tick≈12-30s，足够 EMA 稳定）
-    GRID_DAILY_TARGET_USDT = 2.5       # 每日收益目标（达到后进入利润保护模式）
-    GRID_DRAWDOWN_FROM_PEAK_USDT = 1.5 # 峰值回撤上限（超此值紧急平仓）
+    GRID_DAILY_TARGET_USDT = 1.5       # 每日收益目标（达到后进入利润保护模式，小步快跑先保住利润）
+    GRID_DRAWDOWN_FROM_PEAK_USDT = 1.0 # 峰值回撤上限（超此值紧急平仓，保护已赚利润）
 
 
 # ========== 连接 / 账户（.env 必填项）==========
