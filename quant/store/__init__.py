@@ -21,6 +21,9 @@ def _utc_now() -> str:
 
 
 class NullAuditStore:
+    def __init__(self, db_path: Any = None) -> None:
+        pass
+
     def start_run(self, run_id: str, inst_id: str, meta: dict[str, Any] | None = None) -> None:
         pass
 
