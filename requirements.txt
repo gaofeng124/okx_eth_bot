@@ -1,0 +1,8 @@
+# asyncio TLS 失败时可能触发 connection_lost 早于 connection_made；quant 在 ws_public 里打补丁降噪
+websockets>=12.0
+# [socks]：REST 使用 socks5h:// 代理时需要
+httpx[socks]>=0.27.0
+python-dotenv>=1.0.0
+# 系统若设置了 SOCKS 代理（ALL_PROXY 等），websockets/httpx 需要此包，否则会报
+# “connecting through a SOCKS proxy requires python-socks”
+python-socks>=2.4.0
