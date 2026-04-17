@@ -465,7 +465,7 @@ class RiskError(RuntimeError):
     """风控拒绝。"""
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class RiskConfig:
     max_notional_usdt: float | None = None
     max_order_base: float | None = None

@@ -16,7 +16,7 @@ def is_priced_order(ord_type: str) -> bool:
     return ord_type in PRICED_ORDER_TYPES
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class OrderIntent:
     """策略 → 执行层：统一订单意图（与交易所字段对齐，便于审计与回测）。"""
 
