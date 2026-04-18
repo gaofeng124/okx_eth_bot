@@ -1,11 +1,11 @@
 {
-  "ran_at": "2026-04-18 13:29:44 CST",
-  "eth_24h_trend": "震荡偏涨约+1~+3%，现价约 $2,370（区间 $2,291-$2,420）",
-  "market_summary": "ETH 持续在 $2,100-$2,400 区间震荡，熊势结构完整，关键均线上方压力较大。以太坊基金会完成 7万ETH质押，基本面稍有改善。Glamsterdam 硬分叉 H1 2026 落地预期形成支撑，但短期情绪仍极度悲观。",
-  "fear_greed_index": "极度恐慌（Extreme Fear），数值约 20-30",
-  "funding_rate_trend": "极度恐慌环境下资金费率偏中性偏负，空头主导，多头拥挤度低，GridPro 做市环境相对友好",
-  "decision": "维持现有参数——震荡行情是网格策略黄金时段，GRID_ATR_MULT=0.8/GRID_LEVELS=4/止损2U 参数合理",
+  "ran_at": "2026-04-18 06:04:52 CST",
+  "eth_24h_trend": "API数据不可达（服务器出口IP未在OKX/Binance白名单）；参考上次报告(13:29 CST)：现价约$2,370，24h区间$2,291-$2,420，震荡偏涨约+1~+3%",
+  "market_summary": "本次运行外部市场API全部返回403/空响应，网络出口受限。依据上周期数据：ETH维持$2,100-$2,400震荡格局，极度恐慌情绪持续，Glamsterdam硬分叉预期形成底部支撑，短期趋势中性偏弱。网格做市环境无明显变化。",
+  "fear_greed_index": "API不可达；上次参考值：极度恐慌(Extreme Fear)，约20-30",
+  "funding_rate_trend": "API不可达；上次参考值：中性偏负，空头主导，对GridPro做市影响有限，当前GRID参数安全边际充足",
+  "decision": "维持现有参数——GRID_ATR_MULT=0.8, GRID_LEVELS=4, GRID_WHOLE_STOP_USDT=2.0, GRID_MIN_SPACING_PCT=0.0012, GRID_MAX_SPACING_PCT=0.0040。震荡行情参数匹配，无需调整。",
   "param_changes": [],
-  "risk_notes": "极度恐慌情绪下注意 ETH 可能跌破 $2,100 支撑位引发加速下跌；若触发 GRID_WHOLE_STOP_USDT=2.0 止损则等待 300s 冷静期后再重启；不建议加大杠杆",
-  "next_focus": "关注 ETH 能否守住 $2,200 关键支撑；若恐贪指数回升至 40 以上可考虑适当放宽 GRID_MAX_SPACING_PCT 捕捉更大波动；关注 Glamsterdam 硬分叉消息落地时机"
+  "risk_notes": "⚠️ 本次市场API数据获取失败（出口IP被OKX/Binance封锁），决策基于上周期数据；需关注：1) ETH是否跌破$2,100支撑 2) 若API持续不可达建议检查服务器IP白名单配置或切换代理 3) GRID_WHOLE_STOP_USDT=2.0止损线保持有效",
+  "next_focus": "解决外部API访问问题（建议配置OKX API代理或申请IP白名单）；待API恢复后重点观察ETH能否守住$2,200支撑及资金费率变化"
 }

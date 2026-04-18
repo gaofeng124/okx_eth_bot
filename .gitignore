@@ -2,4 +2,5 @@
 .venv/
 __pycache__/
 *.pyc
-data/
+data/*
+!data/agent_report.json
