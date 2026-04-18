@@ -903,8 +903,12 @@ class GridProStrategy(TickStrategy):
             n_active -= 1
             log.info("[grid] 极度恐慌 FGI=%d，激活档位减1 → %d", self._fear_greed_index, n_active)
 
-        # TRENDING_UP：买单更靠近当前价（期望浅回调）
-        bias = 0.5 if regime == Regime.TRENDING_UP else 1.0
+        # TRENDING_UP：买单更靠近当前价（期望浅回调），格宽放大1.3倍让TP更远以捕捉更多上行利润
+        if regime == Regime.TRENDING_UP:
+            bias = 0.5
+            spacing = min(spacing * 1.3, self._max_sp)
+        else:
+            bias = 1.0
 
         self._grid_spacing  = spacing
         self._grid_center   = center
@@ -1338,14 +1342,14 @@ class GridProStrategy(TickStrategy):
                     s.entry_order_id = ""
             self._grid_active = False
 
-            # 持仓宽限期：45s 或浮亏 > 1U 才触发平仓
+            # 持仓宽限期：60s 或浮亏 > 1U 才触发平仓（60s 覆盖 Regime 最小保持20s，减少误割）
             has_holding = any(s.state == _S.HOLDING for s in self._slots)
             if has_holding:
                 if self._bearish_regime_since == 0.0:
                     self._bearish_regime_since = now
                     log.info("[grid] Regime=%s 宽限期开始，持仓等待TP或价格恢复", regime.value)
                 elapsed = now - self._bearish_regime_since
-                if elapsed > 45.0 or unrealized < -1.0:
+                if elapsed > 60.0 or unrealized < -1.0:
                     log.warning(
                         "[grid] Regime=%s 宽限到期 elapsed=%.0fs unreal=%.3fU，平仓",
                         regime.value, elapsed, unrealized,
@@ -1394,8 +1398,9 @@ class GridProStrategy(TickStrategy):
         # ── 7. TP 追踪（市场大涨时上移 TP） ─────────────────────────────────
         if self._total_held > 0:
             self._maybe_trail_tp(mid)
-            # ── 7b. TP 超时止损：持仓超过8分钟且（价格跌破VWAP-1格宽 OR 浮亏>0.5U）
-            _TP_AGING_SEC = 480.0   # 8 分钟（原10分钟，缩短以减少持仓坏账）
+            # ── 7b. TP 超时止损：持仓超过N分钟且（价格跌破VWAP-1格宽 OR 浮亏>0.5U）
+            # TRENDING_UP 时延长至10分钟：上升趋势中 TP 需更多时间触发，不应过早止损
+            _TP_AGING_SEC = 600.0 if regime == Regime.TRENDING_UP else 480.0
             _tp_price_breach = self._vwap > 0 and mid < self._vwap * (1.0 - self._grid_spacing)
             _tp_loss_breach = unrealized < -0.5  # 浮亏超0.5U触发止损
             if (
