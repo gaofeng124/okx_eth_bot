@@ -4,7 +4,7 @@
 # 用法：nohup bash watchdog.sh >> data/logs/watchdog.log 2>&1 &
 # ============================================================
 
-PROJECT_DIR="/Users/gaofeng/Documents/okx_eth_bot"
+PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
 VENV_PYTHON="$PROJECT_DIR/.venv/bin/python"
 RUN_SCRIPT="run_strategy.py"
 CHECK_INTERVAL=300   # 每 5 分钟检查一次 GitHub
