@@ -1,24 +1,24 @@
 {
-  "ran_at": "2026-04-18 (第三轮) CST",
-  "eth_24h_trend": "OKX API本轮不可达，无法获取实时价格；上轮价格约2375 USDT",
-  "market_summary": "网络不可达，市场数据缺失。基于代码分析：系统持续进化中，P0/P1全部修复，本轮完成两项关键P2优化（TRENDING_DOWN宽限期+FGI集成），策略健壮性大幅提升。",
-  "fear_greed_index": "N/A（API不可达，缓存默认50中性）",
-  "funding_rate_trend": "N/A（API不可达）",
-  "decision": "修复TRENDING_DOWN立即割肉的致命缺陷：新增45s宽限期，避免短暂下跌误触平仓；同时集成FGI恐贪指数，极度恐慌时自动降档",
+  "ran_at": "2026-04-18 本轮（第四轮）",
+  "eth_24h_trend": "无网络访问，市场数据不可用",
+  "market_summary": "沙箱环境无外网，无法获取实时行情。基于已有架构分析，本轮专注P1稳定性修复与P3动量过滤。",
+  "fear_greed_index": "N/A（无网络）",
+  "funding_rate_trend": "N/A（无网络）",
+  "decision": "修复WS静默挂死根因（35s recv超时+2次重连）+ 添加4-tick短窗口急跌过滤(-0.25%)",
   "param_changes": [
     {
-      "param": "TRENDING_DOWN emergency_close behavior",
-      "old": "立即平仓（has_exposure → emergency_close）",
-      "new": "先撤挂单，持仓给45s宽限期（浮亏>1U立即平仓）",
-      "reason": "ETH短暂0.3%下跌后快速恢复，旧逻辑反复割肉导致亏损累积"
+      "param": "_SHORT_VELOCITY_ALARM_PCT",
+      "old": "（不存在）",
+      "new": -0.0025,
+      "reason": "新增4-tick短窗口急跌检测，比20-tick长窗口更敏感，防脉冲式跌落中开格"
     },
     {
-      "param": "_fear_greed_index",
-      "old": "未集成",
-      "new": "每小时从alternative.me获取；FGI<25时_place_grid减1档",
-      "reason": "极度恐慌市场假信号多，减少多头敞口降低风险"
+      "param": "stream_tickers._STALL_TIMEOUT",
+      "old": "（无超时，async for无限等待）",
+      "new": 35.0,
+      "reason": "防WS服务端静默时连接无限挂死，35s无消息发ping，70s无响应强制重连"
     }
   ],
-  "risk_notes": "45s宽限期内若大跌可能造成>1U浮亏，但整体止损5U兜底；_MACRO_DOWN_STOP=-0.0020阈值激进需观察实盘频率",
-  "next_focus": "观察宽限期触发频率，检查TRENDING_DOWN宽限到期vs TP自然成交的比例，决定是否需要进一步放宽_MACRO_DOWN_STOP阈值"
+  "risk_notes": "WS wait_for fix需生产验证；短窗口-0.25%阈值在高频环境可能偏紧，下轮根据日志调整",
+  "next_focus": "Regime阈值验证（需日志）+ TRENDING_UP时激进格宽（P3）+ 宽限期时长微调"
 }

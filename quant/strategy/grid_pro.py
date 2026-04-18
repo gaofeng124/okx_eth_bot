@@ -188,6 +188,15 @@ class _MarketSensor:
         p = list(self._prices)
         return (p[-1] - p[0]) / p[0] if p[0] > 0 else 0.0
 
+    @property
+    def short_velocity_pct(self) -> float:
+        """最近 4 tick 的价格变化率（短窗口急跌检测）。"""
+        if len(self._prices) < 4:
+            return 0.0
+        p = list(self._prices)
+        p4 = p[-4:]
+        return (p4[-1] - p4[0]) / p4[0] if p4[0] > 0 else 0.0
+
     def spread_ok(self, ask: float, bid: float, max_bps: float) -> bool:
         if ask <= 0 or bid <= 0:
             return True   # 数据缺失时放行（保守）
@@ -276,7 +285,8 @@ class GridProStrategy(TickStrategy):
     _FUNDING_CHECK_INTERVAL = 30.0   # 每 30s 刷新资金费率
     _QUOTE_MAX_AGE          = 5.0    # 报价超过 5s 视为过期
     _SPREAD_MAX_BPS         = 12.0   # 点差超过 12bps 不下单
-    _VELOCITY_ALARM_PCT     = -0.0020 # -0.2% / 4s = 接飞刀警报
+    _VELOCITY_ALARM_PCT       = -0.0020 # -0.2% / 20tick 长窗口接飞刀警报
+    _SHORT_VELOCITY_ALARM_PCT = -0.0025 # -0.25% / 4tick 短窗口急跌过滤（更敏感）
     _FUNDING_PAUSE_WINDOW   = 600.0  # 距资金费结算 10min 内暂停开新格
     _FUNDING_RATE_MAX       = 0.0005 # 资金费率 > 0.05% 时抑制做多
     _STOP_COUNT_1H_LIMIT    = 3      # 1小时内触发3次止损 → 延长冷静期
@@ -592,6 +602,9 @@ class GridProStrategy(TickStrategy):
         # 3. 价格速度（接飞刀检测）
         if self._sens.velocity_pct < self._VELOCITY_ALARM_PCT:
             return False, f"falling_knife({self._sens.velocity_pct*100:.3f}%/4s)"
+        # 短窗口急跌：最近4个tick下跌超过0.25%，跳过开格（比20tick窗口更敏感）
+        if self._sens.short_velocity_pct < self._SHORT_VELOCITY_ALARM_PCT:
+            return False, f"short_drop({self._sens.short_velocity_pct*100:.3f}%/4tick)"
 
         # 4. 资金费率
         time_to_fund = (self._next_funding_ms / 1000.0 - now) if self._next_funding_ms > 0 else 9999.0

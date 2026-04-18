@@ -1055,7 +1055,29 @@ async def stream_tickers(
                     backoff = 1.0
                     _last_ping_ts = asyncio.get_event_loop().time()
                     _HEARTBEAT_INTERVAL = 25.0  # OKX 要求 30s 内至少发一次 ping
-                    async for raw in ws:
+                    _STALL_TIMEOUT = 35.0        # recv() 超时阈值，防服务端静默挂死
+                    _stall_count = 0
+                    while True:
+                        try:
+                            raw = await asyncio.wait_for(ws.recv(), timeout=_STALL_TIMEOUT)
+                            _stall_count = 0
+                        except asyncio.TimeoutError:
+                            _stall_count += 1
+                            _now = asyncio.get_event_loop().time()
+                            log.warning(
+                                "[行情][WS] %ds 无消息(stall=%d/2)，发 ping",
+                                int(_STALL_TIMEOUT), _stall_count,
+                            )
+                            try:
+                                await ws.send("ping")
+                                _last_ping_ts = _now
+                            except Exception:
+                                pass
+                            if _stall_count >= 2:
+                                raise asyncio.TimeoutError(
+                                    f"WS 连续 {_stall_count} 次静默，主动重连"
+                                )
+                            continue
                         # 主动心跳：每 25s 发一次 text "ping"
                         _now = asyncio.get_event_loop().time()
                         if _now - _last_ping_ts >= _HEARTBEAT_INTERVAL:
