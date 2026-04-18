@@ -1,66 +1,61 @@
 # ETH量化系统升级计划
 
-## 本次（2026-04-18 本轮）完成
+## 本次（2026-04-18 第二轮）完成
 
-### 1. runner.py：默认会话超时 4h → 24h（P1已修复）
-- **文件**：`quant/app/runner.py` 第3253行
-- **原因**：默认4小时自动SIGTERM，频繁重启导致网格中心漂移、订单丢失
-- **改动**：`"4"` → `"24"`，注释更新说明原因
+### 1. grid_pro.py：负资金费率减少激活档位（P2）
+- **位置**：`_place_grid` 方法，`n_active` 计算后
+- **改动**：若 `self._funding_rate < -0.0003` 且 `n_active > 1`，则 `n_active -= 1`
+- **原因**：负资金费率意味着多头溢价消失、空头情绪占主导，此时减少多头暴露降低风险
 
-### 2. grid_pro.py：构造函数默认值与 settings.py 对齐（P0残留）
-- **文件**：`quant/strategy/grid_pro.py` 第299-305行
+### 2. grid_pro.py：TP超时止损更快、条件更丰富（P2）
+- **位置**：主循环步骤7b
 - **改动**：
-  - `atr_mult: 0.8 → 1.2`（与settings.py一致）
-  - `min_spacing_pct: 0.0012 → 0.0010`
-  - `max_spacing_pct: 0.0040 → 0.0050`
-  - `whole_stop_usdt: 3.0 → 5.0`
-  - `daily_stop_usdt: 5.0 → 6.0`
-  - `daily_target_usdt: 2.5 → 999.0`（消除过早停止交易的根本原因）
-  - `drawdown_from_peak_usdt: 1.5 → 3.0`
-- **原因**：构造函数默认值与settings.py不一致时，若env变量缺失则采用错误的旧值
+  - `_TP_AGING_SEC: 600.0 → 480.0`（8分钟，原10分钟）
+  - 新增 `_tp_loss_breach = unrealized < -0.5`：浮亏超0.5U也触发止损
+  - 触发条件：超时 AND（价格跌破VWAP-格宽 OR 浮亏>0.5U）
+- **原因**：防止持仓长时间亏损无法止损；0.5U浮亏触发比等价格穿透更快响应
 
-### 3. grid_pro.py：成交事件写入 analysis.jsonl（P1完成）
-- **文件**：`quant/strategy/grid_pro.py`
-- **改动**：在入场成交（`_sync_entry`）和TP成交（`_sync_tp`）时各添加一次 `record_analysis` 调用
-- **新增事件类型**：`fill_entry`（含 level/fill_price/fill_sz/target_price/vwap/total_held）
-  和 `fill_tp`（含 fill_price/fill_sz/net_pnl_usdt/daily_pnl_realized/entry_vwap）
-- **原因**：analysis.jsonl 此前只有 grid_status 心跳，无成交记录，无法事后分析盈亏
+### 3. grid_pro.py：宏观偏空阈值收紧（P2）
+- **位置**：主循环步骤10b
+- **改动**：`macro_bearish = macro_bias < -0.0020` → `< -0.0015`（0.20% → 0.15%）
+- **原因**：ETH中等波动时0.20%偏空阈值太宽松，会在下跌中继续开格
+
+---
+
+## 历史完成（上轮 2026-04-18 第一轮）
+
+- [x] P1: runner.py BOT_MAX_SESSION_HOURS 默认 24h（修复4h崩溃）
+- [x] P1: grid_pro.py 构造函数默认值与settings.py完全一致
+- [x] P1: analysis.jsonl 新增 fill_entry / fill_tp 事件记录
+- [x] P0: GRID_DAILY_TARGET_USDT = 999.0（不限制每日收益上限）
+- [x] P0: GRID_DRAWDOWN_FROM_PEAK_USDT = 3.0（峰值回撤阈值放宽）
+- [x] P0: run_strategy.py lock_path 使用动态路径
 
 ---
 
 ## 已知问题清单（按优先级）
 
-### 已修复 ✅
-- [x] P0: GRID_DAILY_TARGET_USDT = 999.0（settings.py）
-- [x] P0: GRID_DRAWDOWN_FROM_PEAK_USDT = 3.0（settings.py）
-- [x] P0: run_strategy.py lock_path 使用动态 Path
-- [x] P1: runner.py BOT_MAX_SESSION_HOURS 默认 24
-- [x] P1: grid_pro.py 构造函数默认值与settings.py完全一致
-- [x] P1: analysis.jsonl 新增 fill_entry / fill_tp 事件
-
 ### 待处理
-- [ ] P1: 服务器.env 需要确认追加（Agent无法SSH，依赖watchdog+push触发）
-- [ ] P2: FGI<25 极度恐慌时动态减少档位（当前市场API不可达，暂缓）
-- [ ] P2: 资金费率为负时减少多头敞口逻辑
-- [ ] P2: TP 超时止损阈值从 10min/1倍格宽 → 8min/0.5U 浮亏（策略优化）
-- [ ] P3: 动量过滤：价格快速下跌时暂停开格（快速下跌判断逻辑）
-- [ ] P3: 趋势跟踪：上升趋势中激进格宽（已有雏形，需调参）
+- [ ] P1: 服务器.env 需确认追加（Agent无法SSH，依赖watchdog+push触发）
+- [ ] P2: FGI<25 极度恐慌时动态减少档位（market API本次不可达，暂缓）
+- [ ] P2: TP 超时止损后的冷静期是否足够（当前 300s，可能需要加长）
+- [ ] P3: 动量过滤：价格快速下跌时暂停开格
+- [ ] P3: 趋势跟踪：上升趋势中激进格宽
 
 ---
 
 ## 下次优先做
 
-1. **验证 analysis.jsonl 是否记录到 fill 事件**（读取 data/analysis.jsonl 检查新事件类型）
-2. **P2: FGI 动态档位调整**：在 `_place_grid` 中根据市场上下文的 `fear_greed` 字段调整 `n_active`
-3. **P2: 资金费率负值减仓**：在 `_refresh_funding` 后，若 `_funding_rate < -0.0003` 则 `_max_levels` 临时减1
-4. **P2: TP超时止损优化**：_TP_AGING_SEC 从600改为480，浮亏条件从"跌破VWAP-1格宽"改为"浮亏>0.5U"
+1. **验证 analysis.jsonl fill 事件**：读取 data/analysis.jsonl 检查是否有 fill_entry/fill_tp
+2. **P2: FGI 动态档位**：在 `_place_grid` 中读取 runtime 的 fear_greed 字段，FGI<25 时再减1档
+3. **P2: TRENDING_DOWN 持仓时是否过激平仓**：检查 Regime 判断阈值，避免微小下跌误触发紧急平仓
+4. **P3: 动量过滤**：检测最近4个tick的价格斜率，快速下跌（>0.3%/4s）时跳过开格
 
 ---
 
 ## 系统当前状态评估
-- **策略有效性**：6/10——P0参数问题已全部修复，代码逻辑无语法错误，但服务器实际运行效果未知（市场API本次不可达）
+- **策略有效性**：7/10——P0/P1问题全修复，P2优化持续迭代，实盘效果待观测
 - **主要风险点**：
-  1. TRENDING_DOWN/VOLATILE regime 触发紧急平仓可能过于频繁（volatile 判断阈值需结合实际ATR校验）
-  2. TP超时止损10分钟可能在低流动性时太短，导致不必要割肉
-  3. runner.py 虽改为24h，但服务器.env如有显式设置则代码默认值不生效
-
+  1. 宏观偏空阈值 -0.0015 在震荡市可能误触（偏激进），首周观察触发频率
+  2. TP超时止损 480s 在低流动性深夜可能切了正常持仓，初期监控 tp_timeout_stoploss 频率
+  3. 服务器.env变量若未更新，settings.py改动不生效（最高优先级确认项）

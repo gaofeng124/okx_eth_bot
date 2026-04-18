@@ -872,6 +872,11 @@ class GridProStrategy(TickStrategy):
             return
 
         spacing = self._vol.spacing_pct(self._atr_mult, self._min_sp, self._max_sp)
+        # 负资金费率（空头溢价）时减少1档，降低多头暴露
+        if self._funding_rate < -0.0003 and n_active > 1:
+            n_active -= 1
+            log.info("[grid] 负资金费率 %.5f，激活档位减1 → %d", self._funding_rate, n_active)
+
         # TRENDING_UP：买单更靠近当前价（期望浅回调）
         bias = 0.5 if regime == Regime.TRENDING_UP else 1.0
 
@@ -1321,14 +1326,14 @@ class GridProStrategy(TickStrategy):
         # ── 7. TP 追踪（市场大涨时上移 TP） ─────────────────────────────────
         if self._total_held > 0:
             self._maybe_trail_tp(mid)
-            # ── 7b. TP 超时止损：持仓超过10分钟且价格已跌破VWAP超1倍格宽
-            #        此时 TP 永远追不到，主动清仓止损
-            _TP_AGING_SEC = 600.0   # 10 分钟
+            # ── 7b. TP 超时止损：持仓超过8分钟且（价格跌破VWAP-1格宽 OR 浮亏>0.5U）
+            _TP_AGING_SEC = 480.0   # 8 分钟（原10分钟，缩短以减少持仓坏账）
+            _tp_price_breach = self._vwap > 0 and mid < self._vwap * (1.0 - self._grid_spacing)
+            _tp_loss_breach = unrealized < -0.5  # 浮亏超0.5U触发止损
             if (
                 self._tp_placed_ts > 0
                 and now - self._tp_placed_ts > _TP_AGING_SEC
-                and self._vwap > 0
-                and mid < self._vwap * (1.0 - self._grid_spacing)
+                and (_tp_price_breach or _tp_loss_breach)
             ):
                 log.warning(
                     "[grid] TP 超时止损: 持仓%.0fs mid=%.2f < vwap=%.2f-格宽",
@@ -1354,7 +1359,7 @@ class GridProStrategy(TickStrategy):
         # ── 10b. 宏观趋势过滤（macro_bias = mid偏离5分钟EMA）───────────────
         # macro_bias < -0.002 = 价格已跌破5分钟均线0.2%以上，宏观向下，禁止开新格
         macro_bias = feat["macro_bias"]
-        macro_bearish = macro_bias < -0.0020
+        macro_bearish = macro_bias < -0.0015
         if macro_bearish and not self._grid_active:
             if market_ok:  # 仅在原本可开格时才记日志（避免刷屏）
                 log.info("[grid] 宏观偏空 macro_bias=%.4f，跳过开格", macro_bias)

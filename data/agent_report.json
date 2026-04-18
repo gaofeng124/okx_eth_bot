@@ -1,20 +1,16 @@
 {
-  "ran_at": "2026-04-18 本轮运行",
-  "eth_24h_trend": "市场数据API本次不可达，无法获取ETH实时价格",
-  "market_summary": "OKX/Alternative.me API均超时，无法获取ETH价格、资金费率及恐贪指数。系统网络受限，本次以代码修复为主。",
+  "ran_at": "2026-04-18 本轮（市场API不可达）",
+  "eth_24h_trend": "市场API返回空，无法获取实时价格",
+  "market_summary": "OKX API本次不可达，无法获取ETH价格与资金费率。根据历史上下文，ETH处于低位震荡区间，策略继续运行P2优化。",
   "fear_greed_index": "获取失败",
-  "funding_rate_trend": "获取失败",
-  "decision": "修复runner.py默认会话超时4h→24h；grid_pro.py构造函数7个默认参数与settings.py对齐；analysis.jsonl新增fill_entry/fill_tp成交事件记录",
+  "funding_rate_trend": "API不可达，上次已知资金费率状态未知",
+  "decision": "实施三项P2优化：负资金费率减档、TP超时止损收紧至480s+浮亏0.5U双触发、宏观偏空阈值收紧至-0.0015",
   "param_changes": [
-    {"param": "BOT_MAX_SESSION_HOURS（代码默认值）", "old": 4, "new": 24, "reason": "减少重启频率，避免网格中心漂移"},
-    {"param": "grid_pro.__init__.daily_target_usdt", "old": 2.5, "new": 999.0, "reason": "与settings.py一致，消除过早停止交易"},
-    {"param": "grid_pro.__init__.drawdown_from_peak_usdt", "old": 1.5, "new": 3.0, "reason": "减少频繁触发紧急平仓"},
-    {"param": "grid_pro.__init__.atr_mult", "old": 0.8, "new": 1.2, "reason": "适应低ATR环境，合理格宽"},
-    {"param": "grid_pro.__init__.min_spacing_pct", "old": 0.0012, "new": 0.001, "reason": "降低格宽下限覆盖更多成交机会"},
-    {"param": "grid_pro.__init__.max_spacing_pct", "old": 0.004, "new": 0.005, "reason": "高波动时允许更大格宽"},
-    {"param": "grid_pro.__init__.whole_stop_usdt", "old": 3.0, "new": 5.0, "reason": "与settings.py一致"},
-    {"param": "grid_pro.__init__.daily_stop_usdt", "old": 5.0, "new": 6.0, "reason": "与settings.py一致"}
+    {"param": "_TP_AGING_SEC", "old": 600.0, "new": 480.0, "reason": "缩短超时止损窗口，减少坏账时间"},
+    {"param": "tp_loss_breach_usdt", "old": "无", "new": 0.5, "reason": "新增浮亏绝对值触发条件，更快响应亏损"},
+    {"param": "macro_bearish_threshold", "old": -0.0020, "new": -0.0015, "reason": "收紧宏观偏空判断，减少下跌中开格"},
+    {"param": "funding_reduce_level_threshold", "old": "无", "new": -0.0003, "reason": "负资金费率时减少1档激活，降低多头暴露"}
   ],
-  "risk_notes": "服务器.env若显式设置BOT_MAX_SESSION_HOURS=4则代码改动不生效；市场API不可达导致本次无法评估实时市场风险",
-  "next_focus": "验证analysis.jsonl是否记录fill事件；实现FGI<25时动态减少网格档位；资金费率负值时减少多头敞口"
+  "risk_notes": "三项改动均偏保守方向（减少暴露、更快止损），主要风险是在正常震荡市场中可能过于敏感导致交易机会减少",
+  "next_focus": "验证analysis.jsonl是否记录fill事件；实现FGI<25动态减档；检查TRENDING_DOWN触发频率是否过高"
 }
