@@ -57,7 +57,9 @@ while true; do
     cd "$PROJECT_DIR"
 
     # 拉取远程最新提交哈希（不修改本地文件）
-    git fetch origin main --quiet 2>/dev/null
+    # 注意：必须用 "git fetch origin" 而非 "git fetch origin main"
+    # 否则 origin/main 跟踪引用不会更新，watchdog 检测不到新提交
+    git fetch origin --quiet 2>/dev/null
     REMOTE_COMMIT=$(git rev-parse origin/main 2>/dev/null)
 
     if [ "$REMOTE_COMMIT" != "$LAST_COMMIT" ]; then
