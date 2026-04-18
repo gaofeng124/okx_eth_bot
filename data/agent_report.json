@@ -1,0 +1,11 @@
+{
+  "ran_at": "2026-04-18 13:29:44 CST",
+  "eth_24h_trend": "震荡偏涨约+1~+3%，现价约 $2,370（区间 $2,291-$2,420）",
+  "market_summary": "ETH 持续在 $2,100-$2,400 区间震荡，熊势结构完整，关键均线上方压力较大。以太坊基金会完成 7万ETH质押，基本面稍有改善。Glamsterdam 硬分叉 H1 2026 落地预期形成支撑，但短期情绪仍极度悲观。",
+  "fear_greed_index": "极度恐慌（Extreme Fear），数值约 20-30",
+  "funding_rate_trend": "极度恐慌环境下资金费率偏中性偏负，空头主导，多头拥挤度低，GridPro 做市环境相对友好",
+  "decision": "维持现有参数——震荡行情是网格策略黄金时段，GRID_ATR_MULT=0.8/GRID_LEVELS=4/止损2U 参数合理",
+  "param_changes": [],
+  "risk_notes": "极度恐慌情绪下注意 ETH 可能跌破 $2,100 支撑位引发加速下跌；若触发 GRID_WHOLE_STOP_USDT=2.0 止损则等待 300s 冷静期后再重启；不建议加大杠杆",
+  "next_focus": "关注 ETH 能否守住 $2,200 关键支撑；若恐贪指数回升至 40 以上可考虑适当放宽 GRID_MAX_SPACING_PCT 捕捉更大波动；关注 Glamsterdam 硬分叉消息落地时机"
+}
