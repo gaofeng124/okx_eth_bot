@@ -1,16 +1,24 @@
 {
-  "ran_at": "2026-04-18 本轮（市场API不可达）",
-  "eth_24h_trend": "市场API返回空，无法获取实时价格",
-  "market_summary": "OKX API本次不可达，无法获取ETH价格与资金费率。根据历史上下文，ETH处于低位震荡区间，策略继续运行P2优化。",
-  "fear_greed_index": "获取失败",
-  "funding_rate_trend": "API不可达，上次已知资金费率状态未知",
-  "decision": "实施三项P2优化：负资金费率减档、TP超时止损收紧至480s+浮亏0.5U双触发、宏观偏空阈值收紧至-0.0015",
+  "ran_at": "2026-04-18 (第三轮) CST",
+  "eth_24h_trend": "OKX API本轮不可达，无法获取实时价格；上轮价格约2375 USDT",
+  "market_summary": "网络不可达，市场数据缺失。基于代码分析：系统持续进化中，P0/P1全部修复，本轮完成两项关键P2优化（TRENDING_DOWN宽限期+FGI集成），策略健壮性大幅提升。",
+  "fear_greed_index": "N/A（API不可达，缓存默认50中性）",
+  "funding_rate_trend": "N/A（API不可达）",
+  "decision": "修复TRENDING_DOWN立即割肉的致命缺陷：新增45s宽限期，避免短暂下跌误触平仓；同时集成FGI恐贪指数，极度恐慌时自动降档",
   "param_changes": [
-    {"param": "_TP_AGING_SEC", "old": 600.0, "new": 480.0, "reason": "缩短超时止损窗口，减少坏账时间"},
-    {"param": "tp_loss_breach_usdt", "old": "无", "new": 0.5, "reason": "新增浮亏绝对值触发条件，更快响应亏损"},
-    {"param": "macro_bearish_threshold", "old": -0.0020, "new": -0.0015, "reason": "收紧宏观偏空判断，减少下跌中开格"},
-    {"param": "funding_reduce_level_threshold", "old": "无", "new": -0.0003, "reason": "负资金费率时减少1档激活，降低多头暴露"}
+    {
+      "param": "TRENDING_DOWN emergency_close behavior",
+      "old": "立即平仓（has_exposure → emergency_close）",
+      "new": "先撤挂单，持仓给45s宽限期（浮亏>1U立即平仓）",
+      "reason": "ETH短暂0.3%下跌后快速恢复，旧逻辑反复割肉导致亏损累积"
+    },
+    {
+      "param": "_fear_greed_index",
+      "old": "未集成",
+      "new": "每小时从alternative.me获取；FGI<25时_place_grid减1档",
+      "reason": "极度恐慌市场假信号多，减少多头敞口降低风险"
+    }
   ],
-  "risk_notes": "三项改动均偏保守方向（减少暴露、更快止损），主要风险是在正常震荡市场中可能过于敏感导致交易机会减少",
-  "next_focus": "验证analysis.jsonl是否记录fill事件；实现FGI<25动态减档；检查TRENDING_DOWN触发频率是否过高"
+  "risk_notes": "45s宽限期内若大跌可能造成>1U浮亏，但整体止损5U兜底；_MACRO_DOWN_STOP=-0.0020阈值激进需观察实盘频率",
+  "next_focus": "观察宽限期触发频率，检查TRENDING_DOWN宽限到期vs TP自然成交的比例，决定是否需要进一步放宽_MACRO_DOWN_STOP阈值"
 }

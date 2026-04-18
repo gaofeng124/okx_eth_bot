@@ -393,6 +393,14 @@ class GridProStrategy(TickStrategy):
         self._funding_rate:     float = 0.0
         self._next_funding_ms:  float = 0.0
 
+        # 危险 Regime 持仓宽限期（TRENDING_DOWN/VOLATILE 进入时不立即割肉，
+        # 给 45s 让 TP 自然成交或价格恢复；浮亏 > 1U 则立即止损）
+        self._bearish_regime_since: float = 0.0
+
+        # 恐贪指数缓存（每小时更新；FGI < 25 极度恐慌时在 _place_grid 减1档）
+        self._fear_greed_index: int   = 50
+        self._last_fgi_ts:      float = 0.0
+
         # REST 客户端
         self._rest = OKXRestClient()
 
@@ -877,6 +885,11 @@ class GridProStrategy(TickStrategy):
             n_active -= 1
             log.info("[grid] 负资金费率 %.5f，激活档位减1 → %d", self._funding_rate, n_active)
 
+        # FGI 极度恐慌（< 25）时再减1档，恐慌行情下降低多头敞口
+        if self._fear_greed_index < 25 and n_active > 1:
+            n_active -= 1
+            log.info("[grid] 极度恐慌 FGI=%d，激活档位减1 → %d", self._fear_greed_index, n_active)
+
         # TRENDING_UP：买单更靠近当前价（期望浅回调）
         bias = 0.5 if regime == Regime.TRENDING_UP else 1.0
 
@@ -1140,6 +1153,29 @@ class GridProStrategy(TickStrategy):
             self._last_fund_ts    = now
 
     # ══════════════════════════════════════════════════════════════════════════
+    # 恐贪指数（每小时更新）
+    # ══════════════════════════════════════════════════════════════════════════
+
+    def _refresh_fgi(self, now: float) -> None:
+        """每小时从 alternative.me 获取一次恐贪指数，失败时保留上次缓存。"""
+        if now - self._last_fgi_ts < 3600.0:
+            return
+        self._last_fgi_ts = now
+        try:
+            import urllib.request as _ur, json as _json
+            with _ur.urlopen(
+                "https://api.alternative.me/fng/?limit=1", timeout=5
+            ) as r:
+                d = _json.loads(r.read())["data"][0]
+                self._fear_greed_index = int(d["value"])
+                log.info(
+                    "[grid] 恐贪指数更新: %d (%s)",
+                    self._fear_greed_index, d["value_classification"],
+                )
+        except Exception as e:
+            log.debug("[grid] 恐贪指数获取失败（保留缓存值 %d）: %s", self._fear_greed_index, e)
+
+    # ══════════════════════════════════════════════════════════════════════════
     # 持仓同步校验
     # ══════════════════════════════════════════════════════════════════════════
 
@@ -1246,6 +1282,7 @@ class GridProStrategy(TickStrategy):
 
         # 资金费率刷新
         self._refresh_funding(runtime, now)
+        self._refresh_fgi(now)
 
         # 持仓同步校验
         self._position_sync_check(runtime, now)
@@ -1275,20 +1312,38 @@ class GridProStrategy(TickStrategy):
             self._emergency_close(stop_reason, mid)
             return None
 
-        # ── 2. 趋势过滤：危险 Regime 立即平仓 ──────────────────────────────
+        # ── 2. 趋势过滤：危险 Regime 处理 ───────────────────────────────────
+        # 策略：挂单立即撤销（无损）；持仓给 45s 宽限期让 TP 自然成交或价格恢复。
+        # 45s 覆盖了 Regime 最小保持时间（20s），避免短暂下跌触发不必要割肉。
+        # 浮亏超过 1U 则不等待，立即止损。
         if regime in (Regime.TRENDING_DOWN, Regime.VOLATILE):
-            has_exposure = any(s.state in (_S.ENTRY_LIVE, _S.HOLDING) for s in self._slots)
-            if has_exposure:
-                self._emergency_close(f"regime_{regime.value}", mid)
-            elif self._grid_active:
-                for s in self._slots:
-                    if s.state == _S.ENTRY_LIVE and s.entry_order_id:
-                        self._cancel_order(s.entry_order_id)
-                        s.state = _S.EMPTY
-                        s.entry_order_id = ""
-                self._grid_active = False
-                log.info("[grid] Regime=%s 暂停网格", regime.value)
+            # 立即撤销所有入场挂单（无损操作）
+            for s in self._slots:
+                if s.state == _S.ENTRY_LIVE and s.entry_order_id:
+                    self._cancel_order(s.entry_order_id)
+                    s.state = _S.EMPTY
+                    s.entry_order_id = ""
+            self._grid_active = False
+
+            # 持仓宽限期：45s 或浮亏 > 1U 才触发平仓
+            has_holding = any(s.state == _S.HOLDING for s in self._slots)
+            if has_holding:
+                if self._bearish_regime_since == 0.0:
+                    self._bearish_regime_since = now
+                    log.info("[grid] Regime=%s 宽限期开始，持仓等待TP或价格恢复", regime.value)
+                elapsed = now - self._bearish_regime_since
+                if elapsed > 45.0 or unrealized < -1.0:
+                    log.warning(
+                        "[grid] Regime=%s 宽限到期 elapsed=%.0fs unreal=%.3fU，平仓",
+                        regime.value, elapsed, unrealized,
+                    )
+                    self._emergency_close(f"regime_{regime.value}_t{elapsed:.0f}s", mid)
+            else:
+                self._bearish_regime_since = 0.0
             return None
+        else:
+            # 安全 Regime：重置宽限计时器
+            self._bearish_regime_since = 0.0
 
         # ── 3. 冷静期 ──────────────────────────────────────────────────────
         cooldown_until = getattr(self, "_cooldown_until", 0.0)
