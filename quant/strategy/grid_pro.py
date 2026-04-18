@@ -907,6 +907,13 @@ class GridProStrategy(TickStrategy):
         if regime == Regime.TRENDING_UP:
             bias = 0.5
             spacing = min(spacing * 1.3, self._max_sp)
+            # 贪婪市场（FGI>60）+ 上升趋势：顺势多激活1档（行情好多赚）
+            if self._fear_greed_index > 60 and n_active < self._max_levels:
+                n_active += 1
+                log.info(
+                    "[grid] 贪婪 FGI=%d + TRENDING_UP，激活档位加1 → %d",
+                    self._fear_greed_index, n_active,
+                )
         else:
             bias = 1.0
 
@@ -1301,6 +1308,20 @@ class GridProStrategy(TickStrategy):
         self._refresh_funding(runtime, now)
         self._refresh_fgi(now)
 
+        # ── 重启恢复：有持仓但无TP ────────────────────────────────────────────
+        # 重启时 _cancel_stale_orders 会撤掉旧TP，而 _tp_order_id 初始化为 ""，
+        # 导致持仓裸露（无止盈保护）。在此处检测并自动补挂TP。
+        if self._total_held > 0 and not self._tp_order_id:
+            if self._grid_spacing <= 0:
+                self._grid_spacing = self._vol.spacing_pct(
+                    self._atr_mult, self._min_sp, self._max_sp
+                ) or self._min_sp
+                log.info(
+                    "[grid] 重启后持仓无TP，用vol格宽=%.4f%% 补挂TP",
+                    self._grid_spacing * 100,
+                )
+            self._update_tp()
+
         # 持仓同步校验
         self._position_sync_check(runtime, now)
 
@@ -1430,9 +1451,10 @@ class GridProStrategy(TickStrategy):
         market_ok, market_reason = self._market_ok_to_enter(runtime, mid, now, bid=bid, ask=ask)
 
         # ── 10b. 宏观趋势过滤（macro_bias = mid偏离5分钟EMA）───────────────
-        # macro_bias < -0.002 = 价格已跌破5分钟均线0.2%以上，宏观向下，禁止开新格
+        # macro_bias < -0.002 = 价格跌破5分钟均线0.2%，与 regime.py _MACRO_DOWN_KILL 对齐
+        # 原阈值 -0.0015 比 regime 更保守，导致 Regime=RANGING 时格仍不开（矛盾）
         macro_bias = feat["macro_bias"]
-        macro_bearish = macro_bias < -0.0015
+        macro_bearish = macro_bias < -0.0020
         if macro_bearish and not self._grid_active:
             if market_ok:  # 仅在原本可开格时才记日志（避免刷屏）
                 log.info("[grid] 宏观偏空 macro_bias=%.4f，跳过开格", macro_bias)
