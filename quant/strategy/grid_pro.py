@@ -296,13 +296,13 @@ class GridProStrategy(TickStrategy):
         ct_val: float = 0.01,
         grid_levels: int = 4,
         atr_window: int = 60,
-        atr_mult: float = 0.8,
-        min_spacing_pct: float = 0.0012,
-        max_spacing_pct: float = 0.0040,
-        whole_stop_usdt: float = 3.0,
-        daily_stop_usdt: float = 5.0,
-        daily_target_usdt: float = 2.5,
-        drawdown_from_peak_usdt: float = 1.5,
+        atr_mult: float = 1.2,
+        min_spacing_pct: float = 0.0010,
+        max_spacing_pct: float = 0.0050,
+        whole_stop_usdt: float = 5.0,
+        daily_stop_usdt: float = 6.0,
+        daily_target_usdt: float = 999.0,
+        drawdown_from_peak_usdt: float = 3.0,
         recenter_mult: float = 1.5,
         entry_timeout_sec: float = 120.0,
         cooldown_sec: float = 300.0,
@@ -1015,6 +1015,19 @@ class GridProStrategy(TickStrategy):
                 "[grid] L%d 成交 fill=%.2f sz=%.1f vwap=%.2f total=%.1f张",
                 s.level, fill_px, actual_fill, self._vwap, self._total_held,
             )
+            try:
+                from quant.detailed_daily_log import record_analysis
+                record_analysis(
+                    "fill_entry",
+                    level=s.level,
+                    fill_price=fill_px,
+                    fill_sz=actual_fill,
+                    target_price=s.target_price,
+                    vwap=self._vwap,
+                    total_held=self._total_held,
+                )
+            except Exception:
+                pass
             self._update_tp()
 
         elif state == "partially_filled":
@@ -1078,6 +1091,18 @@ class GridProStrategy(TickStrategy):
                 "[grid] TP 成交 @%.2f sz=%.1f net=%.4f USDT | 日累计=%.4f USDT",
                 fill_px, actual_fill, total_net, self._pnl.realized,
             )
+            try:
+                from quant.detailed_daily_log import record_analysis
+                record_analysis(
+                    "fill_tp",
+                    fill_price=fill_px,
+                    fill_sz=actual_fill,
+                    net_pnl_usdt=total_net,
+                    daily_pnl_realized=self._pnl.realized,
+                    entry_vwap=self._vwap,
+                )
+            except Exception:
+                pass
             self._reset_grid()
 
         elif state in ("canceled", "partially_canceled"):

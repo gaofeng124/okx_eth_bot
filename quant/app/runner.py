@@ -3248,9 +3248,9 @@ async def run() -> None:
 
 def main() -> None:
     # 支持通过环境变量设置最大运行时间（小时），超时后干净退出由外部脚本重启
-    # 默认 4 小时：避免长时间运行导致 SSL/代理连接劣化，影响订单执行
+    # 默认 24 小时：降低重启频率，减少因重启导致的网格中心漂移和未成交订单丢失
     import os as _os
-    max_hours = float(_os.environ.get("BOT_MAX_SESSION_HOURS", "4"))
+    max_hours = float(_os.environ.get("BOT_MAX_SESSION_HOURS", "24"))
     max_sec = max_hours * 3600.0
     import signal as _signal, threading as _threading
 

@@ -1,11 +1,20 @@
 {
-  "ran_at": "2026-04-18 06:04:52 CST",
-  "eth_24h_trend": "API数据不可达（服务器出口IP未在OKX/Binance白名单）；参考上次报告(13:29 CST)：现价约$2,370，24h区间$2,291-$2,420，震荡偏涨约+1~+3%",
-  "market_summary": "本次运行外部市场API全部返回403/空响应，网络出口受限。依据上周期数据：ETH维持$2,100-$2,400震荡格局，极度恐慌情绪持续，Glamsterdam硬分叉预期形成底部支撑，短期趋势中性偏弱。网格做市环境无明显变化。",
-  "fear_greed_index": "API不可达；上次参考值：极度恐慌(Extreme Fear)，约20-30",
-  "funding_rate_trend": "API不可达；上次参考值：中性偏负，空头主导，对GridPro做市影响有限，当前GRID参数安全边际充足",
-  "decision": "维持现有参数——GRID_ATR_MULT=0.8, GRID_LEVELS=4, GRID_WHOLE_STOP_USDT=2.0, GRID_MIN_SPACING_PCT=0.0012, GRID_MAX_SPACING_PCT=0.0040。震荡行情参数匹配，无需调整。",
-  "param_changes": [],
-  "risk_notes": "⚠️ 本次市场API数据获取失败（出口IP被OKX/Binance封锁），决策基于上周期数据；需关注：1) ETH是否跌破$2,100支撑 2) 若API持续不可达建议检查服务器IP白名单配置或切换代理 3) GRID_WHOLE_STOP_USDT=2.0止损线保持有效",
-  "next_focus": "解决外部API访问问题（建议配置OKX API代理或申请IP白名单）；待API恢复后重点观察ETH能否守住$2,200支撑及资金费率变化"
+  "ran_at": "2026-04-18 本轮运行",
+  "eth_24h_trend": "市场数据API本次不可达，无法获取ETH实时价格",
+  "market_summary": "OKX/Alternative.me API均超时，无法获取ETH价格、资金费率及恐贪指数。系统网络受限，本次以代码修复为主。",
+  "fear_greed_index": "获取失败",
+  "funding_rate_trend": "获取失败",
+  "decision": "修复runner.py默认会话超时4h→24h；grid_pro.py构造函数7个默认参数与settings.py对齐；analysis.jsonl新增fill_entry/fill_tp成交事件记录",
+  "param_changes": [
+    {"param": "BOT_MAX_SESSION_HOURS（代码默认值）", "old": 4, "new": 24, "reason": "减少重启频率，避免网格中心漂移"},
+    {"param": "grid_pro.__init__.daily_target_usdt", "old": 2.5, "new": 999.0, "reason": "与settings.py一致，消除过早停止交易"},
+    {"param": "grid_pro.__init__.drawdown_from_peak_usdt", "old": 1.5, "new": 3.0, "reason": "减少频繁触发紧急平仓"},
+    {"param": "grid_pro.__init__.atr_mult", "old": 0.8, "new": 1.2, "reason": "适应低ATR环境，合理格宽"},
+    {"param": "grid_pro.__init__.min_spacing_pct", "old": 0.0012, "new": 0.001, "reason": "降低格宽下限覆盖更多成交机会"},
+    {"param": "grid_pro.__init__.max_spacing_pct", "old": 0.004, "new": 0.005, "reason": "高波动时允许更大格宽"},
+    {"param": "grid_pro.__init__.whole_stop_usdt", "old": 3.0, "new": 5.0, "reason": "与settings.py一致"},
+    {"param": "grid_pro.__init__.daily_stop_usdt", "old": 5.0, "new": 6.0, "reason": "与settings.py一致"}
+  ],
+  "risk_notes": "服务器.env若显式设置BOT_MAX_SESSION_HOURS=4则代码改动不生效；市场API不可达导致本次无法评估实时市场风险",
+  "next_focus": "验证analysis.jsonl是否记录fill事件；实现FGI<25时动态减少网格档位；资金费率负值时减少多头敞口"
 }
