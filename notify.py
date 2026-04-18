@@ -15,8 +15,8 @@ load_dotenv()
 # ── SMTP 配置 ──────────────────────────────────────────────────
 SMTP_HOST = os.getenv("NOTIFY_SMTP_HOST", "smtp.qq.com")
 SMTP_PORT = int(os.getenv("NOTIFY_SMTP_PORT", "587"))
-SMTP_USER = os.getenv("NOTIFY_SMTP_USER", "")   # QQ 邮箱地址
-SMTP_PASS = os.getenv("NOTIFY_SMTP_PASS", "")   # QQ 邮箱授权码
+SMTP_USER = os.getenv("NOTIFY_SMTP_USER", "")
+SMTP_PASS = os.getenv("NOTIFY_SMTP_PASS", "")
 NOTIFY_TO = os.getenv("NOTIFY_TO", "1240954013@qq.com")
 
 PROJECT = Path(__file__).parent
@@ -42,8 +42,7 @@ def sh(cmd: list, **kw) -> str:
         return ""
 
 def git_log(n=5) -> list[dict]:
-    raw = sh(["git", "log", f"-{n}",
-              "--format=>>>%n%H|%ai|%s%n%b"])
+    raw = sh(["git", "log", f"-{n}", "--format=>>>%n%H|%ai|%s%n%b"])
     blocks, cur = [], {}
     for line in raw.splitlines():
         if line == ">>>":
@@ -65,7 +64,6 @@ def git_log(n=5) -> list[dict]:
     return blocks
 
 def git_diff_files() -> list[dict]:
-    """本次提交各文件变更行数"""
     raw = sh(["git", "diff", "--numstat", "HEAD~1", "HEAD"])
     files = []
     for line in raw.splitlines():
@@ -75,9 +73,7 @@ def git_diff_files() -> list[dict]:
     return files
 
 def git_diff_patch() -> str:
-    """本次提交代码 diff（只看 .py 文件，最多 120 行）"""
-    raw = sh(["git", "diff", "HEAD~1", "HEAD", "--", "*.py",
-              "--unified=2"])
+    raw = sh(["git", "diff", "HEAD~1", "HEAD", "--", "*.py", "--unified=2"])
     lines = raw.splitlines()
     if len(lines) > 120:
         lines = lines[:120] + [f"... (共 {len(lines)} 行，已截断)"]
@@ -96,13 +92,82 @@ def today_analysis() -> list[dict]:
             pass
     return records
 
-def today_trades(records: list[dict]) -> list[dict]:
-    """从 analysis 里筛出所有成交事件"""
-    trades = []
-    for r in records:
-        if r.get("event") in ("fill", "trade", "slot_closed", "tp_hit", "sl_hit"):
-            trades.append(r)
-    return trades
+def today_pnl_from_snapshots() -> float:
+    """
+    从 pnl_snapshots.jsonl 精确计算今日自然日已实现净盈亏。
+    每条记录的 net_realized_pnl_usdt 是当前 run 内的累计值，
+    因此取每个 run 最后一条作为该 run 的终值累加即可。
+    """
+    today = datetime.now(CST).strftime("%Y-%m-%d")
+    snapshots_file = PROJECT / "data" / "logs" / "pnl_snapshots.jsonl"
+    if not snapshots_file.exists():
+        return 0.0
+    try:
+        run_pnl: dict[str, float] = {}
+        with open(snapshots_file, encoding="utf-8", errors="ignore") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    d = json.loads(line)
+                    ts_utc = d.get("ts_utc", "")
+                    ts_dt = datetime.fromisoformat(ts_utc.replace("Z", "+00:00"))
+                    ts_cst_dt = ts_dt.astimezone(CST)
+                    if ts_cst_dt.strftime("%Y-%m-%d") != today:
+                        continue
+                    run_id = d.get("run_id", "unknown")
+                    pnl = d.get("net_realized_pnl_usdt", 0.0)
+                    if pnl is not None:
+                        run_pnl[run_id] = float(pnl)  # 每次覆盖，最终保留最后一条
+                except Exception:
+                    pass
+        return sum(run_pnl.values())
+    except Exception:
+        return 0.0
+
+def today_fills_detail() -> list[dict]:
+    """
+    从 pnl_snapshots.jsonl 提取今日每次成交事件（fills_count 变化时）。
+    返回可读的成交摘要列表。
+    """
+    today = datetime.now(CST).strftime("%Y-%m-%d")
+    snapshots_file = PROJECT / "data" / "logs" / "pnl_snapshots.jsonl"
+    if not snapshots_file.exists():
+        return []
+    fills = []
+    try:
+        prev_count_per_run: dict[str, int] = {}
+        with open(snapshots_file, encoding="utf-8", errors="ignore") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    d = json.loads(line)
+                    ts_utc = d.get("ts_utc", "")
+                    ts_dt = datetime.fromisoformat(ts_utc.replace("Z", "+00:00"))
+                    ts_cst_dt = ts_dt.astimezone(CST)
+                    if ts_cst_dt.strftime("%Y-%m-%d") != today:
+                        continue
+                    run_id = d.get("run_id", "unknown")
+                    fc = int(d.get("fills_count") or 0)
+                    prev = prev_count_per_run.get(run_id, 0)
+                    if fc > prev:
+                        net_pnl = float(d.get("net_realized_pnl_usdt") or 0.0)
+                        fees = float(d.get("fees_usdt") or 0.0)
+                        fills.append({
+                            "ts":      ts_cst_dt.strftime("%H:%M:%S"),
+                            "n_fills": fc - prev,
+                            "net_pnl": net_pnl,
+                            "fees":    fees,
+                        })
+                    prev_count_per_run[run_id] = fc
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    return fills
 
 def week_summary() -> list[dict]:
     rows = []
@@ -119,11 +184,12 @@ def week_summary() -> list[dict]:
             for line in reversed(lines):
                 try:
                     d = json.loads(line)
-                    s = d.get("status_summary", {}).get("session", {})
+                    pnl = d.get("daily_pnl_realized", d.get("status_summary", {}).get("daily_pnl", 0.0))
+                    s = d.get("session_tracker", d.get("status_summary", {}).get("session", {}))
                     rows.append({
                         "date":   day_dir.name,
                         "trades": s.get("trades", 0),
-                        "pnl":    s.get("net_pnl_usdt", 0.0),
+                        "pnl":    float(pnl or 0),
                         "fees":   s.get("total_fees_usdt", 0.0),
                         "wr":     s.get("win_rate", 0.0) * 100,
                         "hours":  s.get("elapsed_hours", 0.0),
@@ -136,11 +202,21 @@ def week_summary() -> list[dict]:
             pass
     return rows
 
+def agent_report() -> dict:
+    try:
+        p = PROJECT / "data" / "agent_report.json"
+        if p.exists():
+            return json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        pass
+    return {}
+
 # ─────────────────────── HTML 构建 ────────────────────────────
 C = {
     "green":  "#16a34a",
     "red":    "#dc2626",
     "blue":   "#2563eb",
+    "orange": "#d97706",
     "gray":   "#6b7280",
     "light":  "#f9fafb",
     "border": "#e5e7eb",
@@ -158,7 +234,7 @@ def card(title: str, body: str) -> str:
   {body}
 </div>"""
 
-def kv_grid(items: list[tuple]) -> str:
+def kv_grid(items: list[tuple], cols: int = 3) -> str:
     cells = ""
     for label, val, color in items:
         cells += f"""
@@ -166,7 +242,7 @@ def kv_grid(items: list[tuple]) -> str:
       <div style="font-size:11px;color:{C['gray']};margin-bottom:3px">{label}</div>
       <div style="font-size:15px;font-weight:700;color:{color}">{val}</div>
     </div>"""
-    return f'<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px">{cells}</div>'
+    return f'<div style="display:grid;grid-template-columns:repeat({cols},1fr);gap:8px">{cells}</div>'
 
 def table(headers: list, rows: list[list], alignments: list = None) -> str:
     aligns = alignments or ["left"] * len(headers)
@@ -204,28 +280,42 @@ def slot_badge(state: str) -> str:
 def pnl_color(v: float) -> str:
     return C["green"] if v >= 0 else C["red"]
 
+def grid_status_display(ss: dict, has_data: bool) -> tuple[str, str]:
+    """智能判断网格状态文字和颜色，避免误报。"""
+    if not has_data:
+        return "—", C["gray"]
+    if ss.get("grid_active"):
+        return "✅ 运行中", C["green"]
+    if ss.get("profit_protect"):
+        return "⏸️ 盈利保护中", C["orange"]
+    # 检查是否有槽位在等待
+    slot_states = ss.get("slots_live", [])
+    if slot_states:
+        return "⏳ 挂单等待", C["blue"]
+    return "⏸️ 等待信号", C["gray"]
+
 def build_html(mode: str) -> str:
     # ── 数据采集 ──────────────────────────────────────────────
-    commits    = git_log(5)
+    commits    = git_log(6)
     diff_files = git_diff_files() if mode == "upgrade" else []
     diff_patch = git_diff_patch() if mode == "upgrade" else ""
     records    = today_analysis()
     snap       = records[-1] if records else {}
-    trades     = today_trades(records)
     weeks      = week_summary()
+    agent      = agent_report()
+    fills      = today_fills_detail()
 
-    ss      = snap.get("status_summary", {})
-    session = ss.get("session", {})
-    slots   = snap.get("slot_states", {})
-    eth_px  = snap.get("mid", 0.0)
-    pnl_day = ss.get("daily_pnl", 0.0)
-    snap_ts = ts_cst(snap.get("ts_wall", ""))
+    ss         = snap.get("status_summary", {})
+    session    = snap.get("session_tracker", ss.get("session", {}))
+    slots      = snap.get("slot_states", {})
+    eth_px     = snap.get("mid", 0.0)
+    snap_ts    = ts_cst(snap.get("ts_wall", ""))
 
-    regime_cn = {"ranging": "震荡区间", "trending_up": "上升趋势",
-                 "trending_down": "下降趋势", "volatile": "高波动",
-                 "warmup": "预热中"}.get(ss.get("regime", ""), ss.get("regime", "-"))
-    vol_cn    = {"dead": "冻结", "calm": "平静", "normal": "正常",
-                 "elevated": "偏高", "extreme": "极端"}.get(ss.get("vol_regime", ""), "-")
+    # 今日已实现盈亏：优先从 pnl_snapshots 精算，fallback 到 analysis 快照
+    pnl_day_snap = snap.get("daily_pnl_realized",
+                            ss.get("daily_pnl", 0.0))
+    pnl_day_precise = today_pnl_from_snapshots()
+    pnl_day = pnl_day_precise if abs(pnl_day_precise) > 0.001 else float(pnl_day_snap or 0.0)
 
     mode_bar_cfg = {
         "upgrade": ("#059669", "🚀", "代码升级完成，系统已自动重启"),
@@ -234,71 +324,58 @@ def build_html(mode: str) -> str:
     }
     bar_color, bar_icon, bar_text = mode_bar_cfg.get(mode, ("#6b7280", "📌", "系统通知"))
 
-    # ── 1. 实时状态卡片 ────────────────────────────────────────
-    grid_txt = "✅ 已激活" if ss.get("grid_active") else "❌ 未激活"
-    grid_col = C["green"] if ss.get("grid_active") else C["red"]
+    # ── 1. 状态概览（精简为3格）────────────────────────────────
+    grid_txt, grid_col = grid_status_display(ss, bool(snap))
     status_block = kv_grid([
-        ("ETH 价格 (USDT)",  f"${eth_px:,.2f}",  C["dark"]),
-        ("今日已实现盈亏",   f"{pnl_day:+.4f} U", pnl_color(pnl_day)),
-        ("网格状态",          grid_txt,             grid_col),
-        ("市场状态",          regime_cn,            C["mid"]),
-        ("波动率",            vol_cn,               C["mid"]),
-        ("ATR 短期",          f"{ss.get('atr_short_bps', 0):.2f} bps", C["mid"]),
-        ("ATR 中期",          f"{ss.get('atr_medium_bps', 0):.2f} bps", C["mid"]),
-        ("网格中心价",        f"${ss.get('grid_center', 0):,.2f}", C["mid"]),
-        ("格宽",              f"{ss.get('grid_spacing_bps', 0):.1f} bps", C["mid"]),
-    ])
-    status_block += f'<div style="margin-top:8px;font-size:12px;color:{C["gray"]}">快照时间：{snap_ts}</div>'
+        ("ETH 当前价格",   f"${eth_px:,.2f}" if eth_px else "—",  C["dark"]),
+        ("今日已实现盈亏", f"{pnl_day:+.1f} U",                   pnl_color(pnl_day)),
+        ("网格状态",        grid_txt,                              grid_col),
+    ], cols=3)
+    if snap_ts:
+        status_block += f'<div style="margin-top:8px;font-size:11px;color:{C["gray"]}">快照时间：{snap_ts}</div>'
 
-    # ── 2. 挂单 & 持仓档位 ────────────────────────────────────
-    slots_html = '<div style="display:flex;flex-wrap:wrap;gap:10px">'
-    if slots:
-        for slot_id in sorted(slots.keys(), key=lambda x: int(x)):
-            state = slots[slot_id]
-            # 计算挂单价格（中心价 ± n * 格宽）
-            center = ss.get("grid_center", 0.0)
-            spacing_bps = ss.get("grid_spacing_bps", 0.0)
-            n = int(slot_id)
-            buy_px = center * (1 - (n + 1) * spacing_bps / 10000)
-            sell_px = center * (1 + (n + 1) * spacing_bps / 10000)
+    # ── 2. 档位详情 ───────────────────────────────────────────
+    slots_html = ""
+    active_slots = {k: v for k, v in slots.items() if v != "empt"}
+    if active_slots:
+        slots_html = '<div style="display:flex;flex-wrap:wrap;gap:10px;margin-bottom:12px">'
+        center      = ss.get("grid_center", 0.0)
+        spacing_bps = ss.get("grid_spacing_bps", 0.0)
+        for slot_id in sorted(active_slots.keys(), key=lambda x: int(x)):
+            state   = active_slots[slot_id]
             holding = ss.get("slots_holding", {}).get(slot_id, {})
-            hold_px = holding.get("entry_px", 0) if holding else 0
-            hold_sz = holding.get("sz", 0) if holding else 0
-            unreal  = holding.get("unrealized_usdt", 0) if holding else 0
-
-            detail = ""
-            if state == "entr":
+            detail  = ""
+            if state == "entr" and center and spacing_bps:
+                n      = int(slot_id)
+                buy_px = center * (1 - (n + 1) * spacing_bps / 10000)
                 detail = f'<div style="font-size:11px;color:{C["blue"]};margin-top:4px">买入挂单 ${buy_px:,.2f}</div>'
-            elif state == "hold":
+            elif state == "hold" and isinstance(holding, dict):
+                ep = holding.get("entry_px", 0)
+                sz = holding.get("sz", 0)
+                ur = holding.get("unrealized_usdt", 0.0)
                 detail = (f'<div style="font-size:11px;color:{C["green"]};margin-top:4px">'
-                          f'持仓均价 ${hold_px:,.2f}<br>'
-                          f'数量 {hold_sz} 张 | 浮盈 {unreal:+.4f}U</div>')
+                          f'均价 ${ep:,.2f} | {sz}张 | '
+                          f'<span style="color:{pnl_color(ur)}">{ur:+.2f}U</span></div>')
             elif state == "cool":
-                detail = f'<div style="font-size:11px;color:{C["gray"]};margin-top:4px">冷却后重新挂单</div>'
-
+                detail = f'<div style="font-size:11px;color:{C["gray"]};margin-top:4px">冷却中</div>'
             slots_html += f"""
             <div style="background:{C['light']};border:1px solid {C['border']};
-                        border-radius:8px;padding:12px 16px;min-width:130px">
-              <div style="font-size:12px;color:{C['gray']};margin-bottom:6px">档位 {slot_id}</div>
-              {slot_badge(state)}
-              {detail}
+                        border-radius:8px;padding:10px 14px;min-width:120px">
+              <div style="font-size:11px;color:{C['gray']};margin-bottom:5px">档位 {slot_id}</div>
+              {slot_badge(state)}{detail}
             </div>"""
-    else:
-        slots_html += f'<div style="color:{C["gray"]};font-size:13px">暂无档位数据</div>'
-    slots_html += "</div>"
+        slots_html += "</div>"
 
-    # 持仓汇总
-    holding_dict = ss.get("slots_holding", {})
-    total_held   = ss.get("total_held", 0.0)
-    vwap         = ss.get("vwap", 0.0)
-    unreal_total = snap.get("unrealized_usdt", 0.0)
-    tp_price     = ss.get("tp_price", 0.0)
-    liq_price    = snap.get("liq_price", 0.0)
-    funding      = ss.get("funding_rate", 0.0)
+    # 持仓汇总（仅有持仓时显示）
+    holding_dict  = ss.get("slots_holding", {})
+    total_held    = ss.get("total_held", 0.0)
+    vwap          = ss.get("vwap", 0.0)
+    unreal_total  = snap.get("unrealized_usdt", 0.0)
+    liq_price     = snap.get("liq_price", 0.0)
 
     holding_rows = []
     for sid, h in holding_dict.items():
-        if isinstance(h, dict):
+        if isinstance(h, dict) and h.get("sz", 0):
             ep  = h.get("entry_px", 0)
             sz  = h.get("sz", 0)
             ur  = h.get("unrealized_usdt", 0.0)
@@ -307,67 +384,54 @@ def build_html(mode: str) -> str:
                 f"档位 {sid}",
                 f"${ep:,.2f}",
                 f"{sz} 张",
-                f'<span style="color:{pnl_color(ur)};font-weight:600">{ur:+.4f} U</span>',
-                f"{dur//60}分钟" if dur else "-",
+                f'<span style="color:{pnl_color(ur)};font-weight:600">{ur:+.2f} U</span>',
+                f"{dur//60}分钟" if dur else "—",
             ])
 
     holding_block = ""
     if holding_rows:
         holding_block = (
-            f'<div style="margin-top:14px">'
-            f'<div style="font-size:12px;font-weight:600;color:{C["mid"]};margin-bottom:8px">当前持仓明细</div>'
+            '<div style="margin-top:10px">'
+            '<div style="font-size:12px;font-weight:600;color:#374151;margin-bottom:8px">当前持仓明细</div>'
             + table(["档位", "开仓均价", "张数", "浮盈亏", "持仓时长"],
                     holding_rows, ["left", "right", "center", "right", "center"])
-            + f'<div style="margin-top:8px;font-size:12px;color:{C["gray"]}'
-              f';display:flex;gap:20px">'
-            + f'<span>总持仓：{total_held:.4f} ETH</span>'
-            + (f'<span>均价：${vwap:,.2f}</span>' if vwap else '')
-            + (f'<span>浮动盈亏：<b style="color:{pnl_color(unreal_total)}">{unreal_total:+.4f} U</b></span>')
-            + (f'<span>止盈价：${tp_price:,.2f}</span>' if tp_price else '')
-            + (f'<span style="color:{C["red"]}">强平价：${liq_price:,.2f}</span>' if liq_price else '')
-            + f'<span>资金费率：{funding:.5f}</span>'
+            + f'<div style="margin-top:8px;font-size:12px;color:{C["gray"]};display:flex;gap:16px">'
+            + f'<span>合计 {total_held:.4f} ETH</span>'
+            + (f'<span>均价 ${vwap:,.2f}</span>' if vwap else '')
+            + f'<span>浮动 <b style="color:{pnl_color(unreal_total)}">{unreal_total:+.2f} U</b></span>'
+            + (f'<span style="color:{C["red"]}">强平 ${liq_price:,.2f}</span>' if liq_price else '')
             + '</div></div>'
         )
+    elif not slots_html:
+        holding_block = f'<div style="color:{C["gray"]};font-size:13px">当前无持仓，等待信号入场</div>'
 
     grid_block = slots_html + holding_block
 
-    # ── 3. 会话统计 ───────────────────────────────────────────
-    net_pnl  = session.get("net_pnl_usdt", 0.0)
-    fees     = session.get("total_fees_usdt", 0.0)
-    session_block = kv_grid([
-        ("运行时长",   f"{session.get('elapsed_hours', 0):.2f} h",  C["mid"]),
-        ("成交笔数",   f"{session.get('trades', 0)} 笔",            C["mid"]),
-        ("胜率",       f"{session.get('win_rate', 0)*100:.1f}%",    C["mid"]),
-        ("净盈亏",     f"{net_pnl:+.4f} U",  pnl_color(net_pnl)),
-        ("已付手续费", f"{fees:.4f} U",       C["red"]),
-        ("每小时盈亏", f"{session.get('pnl_per_hour', 0):+.4f} U/h", pnl_color(session.get("pnl_per_hour", 0))),
-    ])
+    # ── 3. 今日成交记录 ───────────────────────────────────────
+    if fills:
+        # 按成交事件分组显示，累计盈亏
+        fill_rows = []
+        cumulative = 0.0
+        for f in fills:
+            cumulative += f["net_pnl"]
+            fill_rows.append([
+                f["ts"],
+                f'{f["n_fills"]} 笔',
+                f'<span style="color:{pnl_color(f["net_pnl"])};font-weight:600">{f["net_pnl"]:+.2f} U</span>',
+                f'<span style="color:{C["red"]}">{f["fees"]:.3f} U</span>',
+                f'<span style="color:{pnl_color(cumulative)}">{cumulative:+.2f} U</span>',
+            ])
+        trade_block = table(
+            ["时间", "笔数", "净盈亏", "手续费", "当日累计"],
+            fill_rows,
+            ["left", "center", "right", "right", "right"]
+        )
+    else:
+        trade_block = f'<div style="color:{C["gray"]};font-size:13px;padding:8px 0">今日暂无成交记录</div>'
 
-    # ── 4. 成交记录 ───────────────────────────────────────────
-    trade_rows = []
-    for t in trades[-10:]:
-        side  = t.get("side", "-")
-        sc    = C["red"] if side == "sell" else C["blue"]
-        trade_rows.append([
-            ts_cst(t.get("ts_wall", ""))[-8:],
-            f'<span style="color:{sc};font-weight:600">{"卖出" if side=="sell" else "买入"}</span>',
-            f'${t.get("fill_px", t.get("px", 0)):,.2f}',
-            f'{t.get("sz", "-")} 张',
-            f'<span style="color:{pnl_color(t.get("pnl", 0))}">{t.get("pnl", 0):+.4f} U</span>',
-            t.get("reason", "-"),
-        ])
-
-    trade_block = (
-        table(["时间", "方向", "成交价", "数量", "盈亏", "原因"],
-              trade_rows, ["left", "center", "right", "center", "right", "left"])
-        if trade_rows
-        else f'<div style="color:{C["gray"]};font-size:13px;padding:12px 0">本次会话暂无成交记录</div>'
-    )
-
-    # ── 5. 本次升级改动 ───────────────────────────────────────
+    # ── 4. 本次升级改动 ───────────────────────────────────────
     upgrade_block = ""
     if mode == "upgrade":
-        # 文件变更表
         file_rows = [[
             f.get("file", ""),
             f'<span style="color:{C["green"]}">+{f.get("add","0")}</span>',
@@ -376,8 +440,6 @@ def build_html(mode: str) -> str:
 
         patch_html = (diff_patch
                       .replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
-
-        # 给 diff 着色
         colored = []
         for line in patch_html.splitlines():
             if line.startswith("+") and not line.startswith("+++"):
@@ -401,28 +463,29 @@ def build_html(mode: str) -> str:
                f'</pre>' if diff_patch.strip() else "")
         )
 
-    # ── 6. 提交记录 ───────────────────────────────────────────
+    # ── 5. 提交记录（可读摘要）────────────────────────────────
+    def commit_summary(subject: str) -> str:
+        """把技术性的 commit message 转成用户可读的中文摘要。"""
+        s = subject.strip()
+        # 去掉前缀标签
+        for prefix in ["fix:", "feat:", "refactor:", "chore:", "docs:", "perf:",
+                        "fix：", "feat：", "🤖", "🚀"]:
+            if s.lower().startswith(prefix.lower()):
+                s = s[len(prefix):].strip()
+        return s if s else subject
+
     commit_rows = []
-    for c in commits:
+    for c in commits[:5]:
         try:
             t = datetime.fromisoformat(c["time"]).astimezone(CST).strftime("%m-%d %H:%M")
         except Exception:
             t = c["time"][:16]
-        body_html = ""
-        if c.get("body"):
-            items = "".join(f'<li style="margin:2px 0;color:{C["gray"]}">{b}</li>'
-                            for b in c["body"])
-            body_html = f'<ul style="margin:4px 0 0 0;padding-left:18px;font-size:12px">{items}</ul>'
-        commit_rows.append([
-            f'<code style="color:{C["blue"]}">{c["hash"]}</code>',
-            t,
-            f'<div>{c["subject"]}</div>{body_html}',
-        ])
+        summary = commit_summary(c["subject"])
+        commit_rows.append([t, summary])
 
-    commit_block = table(["Hash", "时间", "提交说明"],
-                         commit_rows, ["left", "left", "left"])
+    commit_block = table(["时间", "更新内容"], commit_rows, ["left", "left"])
 
-    # ── 7. 近7日收益 ──────────────────────────────────────────
+    # ── 6. 近7日收益 ─────────────────────────────────────────
     week_rows_html = []
     total_pnl = 0.0
     for r in weeks:
@@ -431,35 +494,87 @@ def build_html(mode: str) -> str:
         week_rows_html.append([
             r["date"],
             str(r["trades"]),
-            f'<span style="color:{pnl_c};font-weight:600">{r["pnl"]:+.4f} U</span>',
-            f'{r["wr"]:.1f}%',
+            f'<span style="color:{pnl_c};font-weight:600">{r["pnl"]:+.1f} U</span>',
+            f'{r["wr"]:.0f}%',
             f'{r["hours"]:.1f}h',
-            f'<span style="color:{pnl_c}">{r["pph"]:+.4f} U/h</span>',
-            f'<span style="color:{pnl_color(r["fees"] if "fees" in r else 0)}">{r.get("fees", 0):.4f} U</span>',
+            f'<span style="color:{pnl_c}">{r["pph"]:+.2f}/h</span>',
         ])
     week_block = (
-        table(["日期", "笔数", "净盈亏", "胜率", "时长", "每小时", "手续费"],
+        table(["日期", "笔数", "净盈亏", "胜率", "时长", "每小时"],
               week_rows_html,
-              ["left", "center", "right", "center", "center", "right", "right"])
+              ["left", "center", "right", "center", "center", "right"])
         + f'<div style="margin-top:8px;text-align:right;font-size:13px;'
           f'color:{pnl_color(total_pnl)};font-weight:700">'
-          f'7日合计：{total_pnl:+.4f} USDT</div>'
+          f'7日合计：{total_pnl:+.1f} USDT</div>'
         if week_rows_html else
         f'<div style="color:{C["gray"]};font-size:13px">暂无历史数据</div>'
     )
 
-    # ── 组装 HTML ─────────────────────────────────────────────
+    # ── 7. Agent 市场分析 ─────────────────────────────────────
+    agent_block = ""
+    if agent:
+        ran_at     = agent.get("ran_at", "")
+        market     = agent.get("market_summary", "")
+        decision   = agent.get("decision", "")
+        changes    = agent.get("param_changes", [])
+        risk       = agent.get("risk_notes", "")
+        next_focus = agent.get("next_focus", "")
+        fgi        = agent.get("fear_greed_index", "")
+        eth_trend  = agent.get("eth_24h_trend", "")
+        funding    = agent.get("funding_rate_trend", "")
+
+        def info_row(label, val, color=None):
+            c = color or C["mid"]
+            return (f'<div style="margin-bottom:8px">'
+                    f'<span style="color:{C["gray"]};font-size:12px">{label}：</span>'
+                    f'<span style="color:{c};font-size:13px">{val}</span></div>')
+
+        changes_html = ""
+        if changes:
+            rows = [[c.get("param",""), str(c.get("old","")), str(c.get("new","")), c.get("reason","")] for c in changes]
+            changes_html = (
+                '<div style="margin-top:12px;font-size:12px;font-weight:600;'
+                'color:#374151;margin-bottom:6px">本次参数调整</div>'
+                + table(["参数", "调整前", "调整后", "原因"], rows, ["left","center","center","left"])
+            )
+        else:
+            changes_html = (f'<div style="color:{C["gray"]};font-size:13px;margin-top:10px">'
+                            f'✅ 本次分析：参数维持不变</div>')
+
+        agent_block = (
+            f'<div style="font-size:11px;color:{C["gray"]};margin-bottom:12px">Agent 运行于 {ran_at}</div>'
+            + (info_row("ETH 24h", eth_trend) if eth_trend else "")
+            + (info_row("市场研判", market) if market else "")
+            + (info_row("恐贪指数", fgi,
+                        C["blue"] if "贪婪" in fgi else C["red"] if "恐慌" in fgi else C["mid"])
+               if fgi else "")
+            + (info_row("资金费率", funding) if funding else "")
+            + (info_row("本次决策", decision,
+                        C["green"] if any(w in decision for w in ["维持","正常","好转"]) else C["orange"])
+               if decision else "")
+            + (f'<div style="margin-top:8px;padding:10px;background:#fff7ed;'
+               f'border-left:3px solid #f59e0b;border-radius:4px;'
+               f'font-size:13px;color:#92400e">⚠️ {risk}</div>' if risk else "")
+            + (f'<div style="margin-top:8px;padding:8px 12px;background:#f0fdf4;'
+               f'border-radius:4px;font-size:12px;color:#166534">⏭️ 下次关注：{next_focus}</div>'
+               if next_focus else "")
+            + changes_html
+        )
+
+    # ── 组装 ─────────────────────────────────────────────────
     sections = [
-        card("📡 实时行情 & 网格状态", status_block),
-        card("📋 档位详情 & 持仓", grid_block),
-        card("⚡ 本次会话统计", session_block),
-        card("💰 成交记录（最近10笔）", trade_block),
+        card("📡 交易状态", status_block),
     ]
+    if grid_block.strip():
+        sections.append(card("📋 档位 & 持仓", grid_block))
+    sections.append(card("💰 今日成交记录", trade_block))
+    if agent_block:
+        sections.append(card("🤖 Agent 市场分析与升级", agent_block))
     if mode == "upgrade" and (diff_files or diff_patch):
-        sections.append(card("🔧 本次升级改动", upgrade_block))
+        sections.append(card("🔧 本次代码改动", upgrade_block))
     sections += [
-        card("📝 最近提交记录", commit_block),
-        card("📈 近7日收益汇总", week_block),
+        card("📝 最近更新记录", commit_block),
+        card("📈 近7日收益", week_block),
     ]
 
     return f"""<!DOCTYPE html>
@@ -470,7 +585,6 @@ def build_html(mode: str) -> str:
              font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif">
 <div style="max-width:720px;margin:0 auto">
 
-  <!-- 顶栏 -->
   <div style="background:{bar_color};color:white;border-radius:10px 10px 0 0;
               padding:20px 28px;display:flex;align-items:center;gap:12px">
     <span style="font-size:28px">{bar_icon}</span>
@@ -483,7 +597,6 @@ def build_html(mode: str) -> str:
     </div>
   </div>
 
-  <!-- 正文 -->
   <div style="background:white;border-radius:0 0 10px 10px;
               padding:24px 28px;box-shadow:0 2px 8px rgba(0,0,0,.08)">
     {"".join(sections)}
@@ -499,13 +612,15 @@ def build_html(mode: str) -> str:
 
 def get_subject(mode: str, snap: dict) -> str:
     ss   = snap.get("status_summary", {})
-    pnl  = ss.get("daily_pnl", 0.0)
     eth  = snap.get("mid", 0.0)
-    grid = "✅网格激活" if ss.get("grid_active") else "❌网格停止"
+    pnl  = today_pnl_from_snapshots()
+    if abs(pnl) < 0.001:
+        pnl = float(snap.get("daily_pnl_realized", ss.get("daily_pnl", 0.0)) or 0.0)
+    grid_txt, _ = grid_status_display(ss, bool(snap))
     return {
-        "upgrade": f"🚀 ETH Bot 升级完成 | ETH ${eth:,.0f} | 今日 {pnl:+.4f}U | {grid} | {now_cst('%m-%d %H:%M')}",
-        "daily":   f"📊 ETH Bot 日报 | {now_cst('%m-%d')} | 今日 {pnl:+.4f}U | ETH ${eth:,.0f}",
-        "crash":   f"⚠️ ETH Bot 异常告警 | 正在重启 | {now_cst('%m-%d %H:%M')}",
+        "upgrade": f"🚀 ETH Bot 升级 | ETH ${eth:,.0f} | 今日 {pnl:+.1f}U | {grid_txt} | {now_cst('%m-%d %H:%M')}",
+        "daily":   f"📊 ETH Bot 日报 | {now_cst('%m-%d')} | 今日 {pnl:+.1f}U | ETH ${eth:,.0f}",
+        "crash":   f"⚠️ ETH Bot 异常重启 | {now_cst('%m-%d %H:%M')} | 今日 {pnl:+.1f}U",
     }.get(mode, f"ETH Bot 通知 | {now_cst()}")
 
 
