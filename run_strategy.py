@@ -11,6 +11,7 @@ import atexit
 import fcntl
 import os
 import sys
+from pathlib import Path
 
 
 def _live_check() -> None:
@@ -55,7 +56,7 @@ def _live_check() -> None:
 def main() -> None:
     if "--live-check" in sys.argv:
         _live_check()
-    lock_path = "/Users/gaofeng/Documents/okx_eth_bot/data/logs/run_strategy.lock"
+    lock_path = str(Path(__file__).resolve().parent / "data" / "logs" / "run_strategy.lock")
     os.makedirs(os.path.dirname(lock_path), exist_ok=True)
     lock_fp = open(lock_path, "w")
     try:

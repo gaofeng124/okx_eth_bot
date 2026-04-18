@@ -456,21 +456,21 @@ class D:
     # ── GridPro 专属参数（10x 网格策略）──────────────────────────────────────
     GRID_LEVELS = 4                    # 网格档数（向下放 N 档限价买单）
     GRID_ATR_WINDOW = 60               # ATR 计算窗口（tick 数，60≈12s）
-    GRID_ATR_MULT = 0.8                # 格宽 = ATR × 此系数
-    GRID_MIN_SPACING_PCT = 0.0012      # 最小格宽 12bps（>7bps 手续费，确保盈利）
-    GRID_MAX_SPACING_PCT = 0.0040      # 最大格宽 40bps（过宽成交率低）
-    GRID_WHOLE_STOP_USDT = 2.0         # 整体止损：总浮亏超此值市价平仓（目标1-2U/天，止损不超过1天利润）
-    GRID_DAILY_STOP_USDT = 3.0         # 日亏损上限：超此值当日停止（收紧至3U，避免一天亏掉3天利润）
-    GRID_RECENTER_MULT = 1.5           # 价格偏离 > 1.5×格宽 时重置网格中心（原2.5，缩短防止挂单穿叉）
-    GRID_ENTRY_TIMEOUT_SEC = 120.0     # 入场单 2 分钟未成交自动撤销
-    GRID_COOLDOWN_SEC = 300.0          # 整体止损后冷静期（秒）
+    GRID_ATR_MULT = 1.2                # 格宽 = ATR × 此系数（放大以适应低ATR环境）
+    GRID_MIN_SPACING_PCT = 0.0010      # 最小格宽 10bps（大于往返手续费4bps，有净利润空间）
+    GRID_MAX_SPACING_PCT = 0.0050      # 最大格宽 50bps（扩大上限，高波动时仍能成交）
+    GRID_WHOLE_STOP_USDT = 5.0         # 整体止损：浮亏超此值市价平仓（50U本金的10%）
+    GRID_DAILY_STOP_USDT = 6.0         # 日亏损上限：超此值当日停止（50U本金的12%，给足调试空间）
+    GRID_RECENTER_MULT = 2.0           # 价格偏离 > 2×格宽 时重置中心（原1.5太激进，频繁重置浪费机会）
+    GRID_ENTRY_TIMEOUT_SEC = 180.0     # 入场单 3 分钟未成交撤销（原2分钟太短）
+    GRID_COOLDOWN_SEC = 120.0          # 整体止损后冷静期（原5分钟缩为2分钟，更快恢复）
     GRID_SYNC_INTERVAL_SEC = 2.0       # 查单频率（秒）
     GRID_ROUNDTRIP_FEE_BPS = 4.0       # 往返手续费（maker+maker = 2+2 bps）
     GRID_LEVERAGE = 10.0               # 网格策略杠杆
     GRID_TD_MODE = "isolated"          # 逐仓模式
-    GRID_WARMUP_TICKS = 60             # 热身期 tick 数（60 tick≈12-30s，足够 EMA 稳定）
-    GRID_DAILY_TARGET_USDT = 1.5       # 每日收益目标（达到后进入利润保护模式，小步快跑先保住利润）
-    GRID_DRAWDOWN_FROM_PEAK_USDT = 1.0 # 峰值回撤上限（超此值紧急平仓，保护已赚利润）
+    GRID_WARMUP_TICKS = 30             # 热身期（原60缩为30，更快开始交易）
+    GRID_DAILY_TARGET_USDT = 999.0     # 无每日上限——全天持续交易不停止（原1.5U上限是致命缺陷）
+    GRID_DRAWDOWN_FROM_PEAK_USDT = 3.0 # 峰值回撤上限放宽（原1.0U太敏感，频繁触发紧急平仓）
 
 
 # ========== 连接 / 账户（.env 必填项）==========
