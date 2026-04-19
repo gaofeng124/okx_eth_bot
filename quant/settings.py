@@ -466,11 +466,16 @@ class D:
     GRID_COOLDOWN_SEC = 120.0          # 整体止损后冷静期（原5分钟缩为2分钟，更快恢复）
     GRID_SYNC_INTERVAL_SEC = 2.0       # 查单频率（秒）
     GRID_ROUNDTRIP_FEE_BPS = 4.0       # 往返手续费（maker+maker = 2+2 bps）
-    GRID_LEVERAGE = 10.0               # 网格策略杠杆
+    GRID_LEVERAGE = 5.0                # 网格策略杠杆（10→5，小账户爆仓保护）
     GRID_TD_MODE = "isolated"          # 逐仓模式
     GRID_WARMUP_TICKS = 30             # 热身期（原60缩为30，更快开始交易）
     GRID_DAILY_TARGET_USDT = 999.0     # 无每日上限——全天持续交易不停止（原1.5U上限是致命缺陷）
-    GRID_DRAWDOWN_FROM_PEAK_USDT = 3.0 # 峰值回撤上限放宽（原1.0U太敏感，频繁触发紧急平仓）
+    GRID_DRAWDOWN_FROM_PEAK_USDT = 2.0 # 峰值回撤上限（适配 42U 小账户，~5%）
+    # 单格张数（ETH-USDT-SWAP ctVal=0.1ETH，1张=0.1ETH）。
+    # 默认 0.2 张 = 0.02 ETH ≈ 46U 名义；5× 杠杆下每仓保证金 ~9.3U，适配 42U 账户
+    GRID_CONTRACTS_PER_SLOT = 0.2
+    # 单仓硬止损：任一 HOLDING 槽位浮亏超此值立即市价平该仓（不等整体止损）
+    GRID_PER_SLOT_STOP_USDT = 1.5
 
 
 # ========== 连接 / 账户（.env 必填项）==========
@@ -909,6 +914,8 @@ GRID_TD_MODE           = _es("GRID_TD_MODE",           D.GRID_TD_MODE)
 GRID_WARMUP_TICKS          = _ei("GRID_WARMUP_TICKS",          D.GRID_WARMUP_TICKS)
 GRID_DAILY_TARGET_USDT     = _ef("GRID_DAILY_TARGET_USDT",     D.GRID_DAILY_TARGET_USDT)
 GRID_DRAWDOWN_FROM_PEAK_USDT = _ef("GRID_DRAWDOWN_FROM_PEAK_USDT", D.GRID_DRAWDOWN_FROM_PEAK_USDT)
+GRID_CONTRACTS_PER_SLOT = _ef("GRID_CONTRACTS_PER_SLOT", D.GRID_CONTRACTS_PER_SLOT)
+GRID_PER_SLOT_STOP_USDT = _ef("GRID_PER_SLOT_STOP_USDT", D.GRID_PER_SLOT_STOP_USDT)
 DATA_DIR               = _es("DATA_DIR",               "./data")
 
 

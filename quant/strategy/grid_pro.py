@@ -323,6 +323,8 @@ class GridProStrategy(TickStrategy):
         roundtrip_fee_bps: float = 4.0,
         data_dir: str = "./data",
         warmup_ticks: int = 200,
+        contracts_per_slot: float = 1.0,
+        per_slot_stop_usdt: float = 0.0,
     ) -> None:
         self._inst_id     = inst_id
         self._leverage    = leverage
@@ -340,6 +342,10 @@ class GridProStrategy(TickStrategy):
         self._sync_iv     = sync_interval_sec
         self._fee_bps     = roundtrip_fee_bps
         self._warmup_need = warmup_ticks
+        # 单格张数（与账户规模匹配：小账户用分数张；lotSz 通常 0.01 支持）
+        self._contracts_per_slot = max(0.01, float(contracts_per_slot))
+        # 单仓硬止损（USDT）：任一 HOLDING 槽位浮亏超此值立即市价平该仓；0=关闭
+        self._per_slot_stop = max(0.0, float(per_slot_stop_usdt))
 
         # 仪器规格（启动时从 API 获取）
         self._tick_sz: float = 10 ** (-price_decimals)
@@ -347,7 +353,11 @@ class GridProStrategy(TickStrategy):
         self._min_sz:  float = 1.0
 
         # 网格槽位（最多 grid_levels 个，实际激活由 vol_regime 决定）
-        self._slots: list[GridSlot] = [GridSlot(level=i) for i in range(grid_levels)]
+        # 每个槽位初始合约张数由 contracts_per_slot 指定（默认 1.0 以向后兼容）
+        self._slots: list[GridSlot] = [
+            GridSlot(level=i, contracts=self._contracts_per_slot)
+            for i in range(grid_levels)
+        ]
 
         # 网格状态
         self._grid_center:  float = 0.0
@@ -421,6 +431,16 @@ class GridProStrategy(TickStrategy):
 
         # 启动对账
         self._boot_reconcile()
+
+        # 关键风控配置一次性打印（便于日志核对）
+        log.info(
+            "[grid] 风控配置 lev=%.1fx grid_levels=%d contracts_per_slot=%.3f "
+            "whole_stop=%.2fU daily_stop=%.2fU per_slot_stop=%.2fU peak_dd=%.2fU "
+            "ct_val_init=%.3f",
+            self._leverage, self._max_levels, self._contracts_per_slot,
+            self._whole_stop, self._pnl._stop, self._per_slot_stop,
+            self._pnl._drawdown_limit, self._ct_val,
+        )
 
     # ══════════════════════════════════════════════════════════════════════════
     # 启动对账
@@ -1483,6 +1503,27 @@ class GridProStrategy(TickStrategy):
         if now - self._last_sync_ts >= self._sync_iv:
             self._sync_orders(now)
             self._last_sync_ts = now
+
+        # ── 6a. 单仓硬止损（每个 HOLDING 槽位独立评估） ───────────────────
+        # 单槽浮亏公式与 _calc_unrealized 一致：
+        #   pnl_pct = (mid - fill_price) / fill_price
+        #   slot_upl = pnl_pct * notional(fill_sz, mid) * leverage
+        # 任一槽位超过 per_slot_stop 立即触发紧急平仓（整仓）
+        # 原因：小账户下，即使只有一个槽位失控，也会迅速穿透整体止损阈值；
+        # 所以"快一步"在单仓层先行截断
+        if self._per_slot_stop > 0:
+            for s in self._slots:
+                if s.state != _S.HOLDING or s.fill_sz <= 0 or s.fill_price <= 0:
+                    continue
+                pnl_pct = (mid - s.fill_price) / s.fill_price
+                slot_upl = pnl_pct * self._notional(s.fill_sz, mid) * self._leverage
+                if slot_upl <= -self._per_slot_stop:
+                    log.warning(
+                        "[grid] 单仓硬止损: L%d 浮亏=%.4f USDT (fill=%.2f, mid=%.2f, sz=%.3f)",
+                        s.level, slot_upl, s.fill_price, mid, s.fill_sz,
+                    )
+                    self._emergency_close(f"per_slot_stop_L{s.level}", mid)
+                    return None
 
         # ── 6. 整体浮亏止损 ─────────────────────────────────────────────────
         unrealized = self._calc_unrealized(mid)

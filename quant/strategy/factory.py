@@ -24,6 +24,8 @@ from quant.settings import (
     GRID_WARMUP_TICKS,
     GRID_DAILY_TARGET_USDT,
     GRID_DRAWDOWN_FROM_PEAK_USDT,
+    GRID_CONTRACTS_PER_SLOT,
+    GRID_PER_SLOT_STOP_USDT,
 )
 from quant.strategy.base import TickStrategy
 from quant.strategy.grid_pro import GridProStrategy
@@ -55,4 +57,6 @@ def build_strategy() -> TickStrategy:
         warmup_ticks=GRID_WARMUP_TICKS,
         daily_target_usdt=GRID_DAILY_TARGET_USDT,
         drawdown_from_peak_usdt=GRID_DRAWDOWN_FROM_PEAK_USDT,
+        contracts_per_slot=GRID_CONTRACTS_PER_SLOT,
+        per_slot_stop_usdt=GRID_PER_SLOT_STOP_USDT,
     )
