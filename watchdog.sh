@@ -74,7 +74,8 @@ while true; do
             # 本地没有 agent 改动 → 安全直接 reset
             log "=== 检测到 origin/main 新提交：$LAST_ORIGIN_COMMIT → $REMOTE_COMMIT（本地无改动，直接 reset）==="
             git reset --hard origin/main --quiet 2>/dev/null
-            git clean -fd --quiet 2>/dev/null
+            # 只清 tracked 文件的本地修改，不动 data/logs/ 等 .gitignore 里的运行时文件
+            git clean -fd -e 'data/' --quiet 2>/dev/null
             log "代码已强制同步到 $REMOTE_COMMIT"
             restart_system
             "$VENV_PYTHON" "$PROJECT_DIR/notify.py" upgrade >> "$LOG_FILE" 2>&1 &

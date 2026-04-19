@@ -4,3 +4,8 @@ __pycache__/
 *.pyc
 data/*
 !data/agent_report.json
+# Claude Code 运行时缓存 —— 不提交（含权限缓存、会话等，且可能含 SSH 密码片段）
+.claude/
+.idea/
+# 辅助脚本 - 本机用
+fix_instructions.py

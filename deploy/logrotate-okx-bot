@@ -1,0 +1,33 @@
+# logrotate 配置 for OKX ETH Bot
+# 安装方式：
+#   cp deploy/logrotate-okx-bot /etc/logrotate.d/okx-bot
+# 每天自动跑（默认由 /etc/cron.daily/logrotate 触发）
+
+/root/okx_eth_bot/data/logs/ai_brain.log
+/root/okx_eth_bot/data/logs/watchdog.log
+{
+    daily
+    rotate 14
+    maxsize 50M
+    compress
+    delaycompress
+    missingok
+    notifempty
+    copytruncate
+}
+
+/root/okx_eth_bot/data/logs/pnl_snapshots.jsonl
+/root/okx_eth_bot/data/logs/runtime_checkpoints.jsonl
+{
+    weekly
+    rotate 8
+    maxsize 200M
+    compress
+    delaycompress
+    missingok
+    notifempty
+    copytruncate
+}
+
+# daily 目录按日期分，保留 14 天（2 周）—— 超过则压缩归档
+# 由一个单独的 find 脚本处理，因为 logrotate 不直接支持按日期目录删
