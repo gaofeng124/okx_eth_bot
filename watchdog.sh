@@ -49,7 +49,10 @@ fi
 
 log "=== 守门人启动，每 ${CHECK_INTERVAL}s 检查 GitHub 更新 ==="
 
-LAST_COMMIT=$(git rev-parse HEAD 2>/dev/null)
+# 跟踪上次已知的 origin/main 提交
+LAST_ORIGIN_COMMIT=$(git rev-parse origin/main 2>/dev/null || git rev-parse HEAD 2>/dev/null)
+# 追踪本地 HEAD（检测 agent 通过 SSH 直接 commit 的本地改动）
+LAST_LOCAL_HEAD=$(git rev-parse HEAD 2>/dev/null)
 
 while true; do
     sleep "$CHECK_INTERVAL"
@@ -61,29 +64,49 @@ while true; do
     # 否则 origin/main 跟踪引用不会更新，watchdog 检测不到新提交
     git fetch origin --quiet 2>/dev/null
     REMOTE_COMMIT=$(git rev-parse origin/main 2>/dev/null)
+    LOCAL_HEAD=$(git rev-parse HEAD 2>/dev/null)
+    # 本地相对 origin/main 超前多少 commit（agent 改动时 > 0）
+    LOCAL_AHEAD=$(git rev-list --count origin/main..HEAD 2>/dev/null || echo 0)
 
-    if [ "$REMOTE_COMMIT" != "$LAST_COMMIT" ]; then
-        log "=== 检测到 GitHub 新提交：$LAST_COMMIT → $REMOTE_COMMIT ==="
-
-        # 强制同步到最新版本（reset --hard 永远不会产生冲突，比 git pull 更可靠）
-        git reset --hard origin/main --quiet 2>/dev/null
-        git clean -fd --quiet 2>/dev/null
-        log "代码已强制同步到 $REMOTE_COMMIT"
-
-        # 重启系统
-        restart_system
-
-        # 发送升级通知邮件
-        "$VENV_PYTHON" "$PROJECT_DIR/notify.py" upgrade >> "$LOG_FILE" 2>&1 &
-
-        LAST_COMMIT="$REMOTE_COMMIT"
-    else
-        # 检查系统是否还活着，不活着就重启
-        if ! pgrep -f "$RUN_SCRIPT" > /dev/null; then
-            log "⚠️  系统意外退出，自动重启..."
+    # ── 分支 1：origin/main 有新提交 ────────────────────────────────
+    if [ "$REMOTE_COMMIT" != "$LAST_ORIGIN_COMMIT" ]; then
+        if [ "$LOCAL_AHEAD" -eq 0 ]; then
+            # 本地没有 agent 改动 → 安全直接 reset
+            log "=== 检测到 origin/main 新提交：$LAST_ORIGIN_COMMIT → $REMOTE_COMMIT（本地无改动，直接 reset）==="
+            git reset --hard origin/main --quiet 2>/dev/null
+            git clean -fd --quiet 2>/dev/null
+            log "代码已强制同步到 $REMOTE_COMMIT"
             restart_system
-            # 发送崩溃告警邮件
-            "$VENV_PYTHON" "$PROJECT_DIR/notify.py" crash >> "$LOG_FILE" 2>&1 &
+            "$VENV_PYTHON" "$PROJECT_DIR/notify.py" upgrade >> "$LOG_FILE" 2>&1 &
+        else
+            # 本地有 agent 改动 → 尝试 rebase 保留 agent 工作；失败则放弃 pull 保留本地
+            log "=== origin/main 有新提交 $REMOTE_COMMIT，但本地超前 ${LOCAL_AHEAD} 个 commit（agent 改动），尝试 rebase ==="
+            if git rebase origin/main --quiet 2>>"$LOG_FILE"; then
+                log "✓ rebase 成功，重启系统"
+                restart_system
+            else
+                log "⚠️ rebase 冲突，已 abort；保留本地 agent 改动。人工合并时请在服务器上 git rebase/merge"
+                git rebase --abort 2>/dev/null
+            fi
         fi
+        LAST_ORIGIN_COMMIT="$REMOTE_COMMIT"
+        LAST_LOCAL_HEAD=$(git rev-parse HEAD 2>/dev/null)
+        continue
+    fi
+
+    # ── 分支 2：本地 HEAD 变了（agent 刚在服务器上 commit 了东西）─────────
+    if [ "$LOCAL_HEAD" != "$LAST_LOCAL_HEAD" ]; then
+        log "=== 本地 HEAD 变化：$LAST_LOCAL_HEAD → $LOCAL_HEAD（agent 已在服务器 commit），重启加载新代码 ==="
+        restart_system
+        "$VENV_PYTHON" "$PROJECT_DIR/notify.py" upgrade >> "$LOG_FILE" 2>&1 &
+        LAST_LOCAL_HEAD="$LOCAL_HEAD"
+        continue
+    fi
+
+    # ── 分支 3：一切未变，只检查进程是否存活 ────────────────────────────
+    if ! pgrep -f "$RUN_SCRIPT" > /dev/null; then
+        log "⚠️  系统意外退出，自动重启..."
+        restart_system
+        "$VENV_PYTHON" "$PROJECT_DIR/notify.py" crash >> "$LOG_FILE" 2>&1 &
     fi
 done
