@@ -1569,6 +1569,72 @@ async def _ws_price_feed_loop(runtime: dict[str, Any]) -> None:
             await asyncio.sleep(5.0)
 
 
+async def _ws_stall_watchdog_loop(
+    *,
+    strat: object,
+    metrics: Any,
+    audit: Any,
+    run_id: str,
+    pipeline: Any,
+    loop: asyncio.AbstractEventLoop,
+    session_trade: Any,
+    account_client: Any,
+    inv_state: Any,
+    lev5_guard: Any,
+    lev5_runtime: dict[str, Any],
+    stall_sec: float = 30.0,
+) -> None:
+    """WS 静默保底：行情 dispatch 超过 stall_sec 无新 tick 时注入 synthetic tick。
+    解决场景：冷静期结束后 WS 网络抖动导致 on_tick 长时间不被调用，网格无法自动恢复。
+    """
+    await asyncio.sleep(60.0)  # 初始等待，给 WS 建连和首个 tick 到来的时间
+    while True:
+        await asyncio.sleep(5.0)
+        now = time.time()
+        last_dispatch = float(lev5_runtime.get("ws_dispatch_ts") or 0.0)
+        if now - last_dispatch < stall_sec:
+            continue
+        synth_last = float(lev5_runtime.get("ws_last") or 0.0)
+        if synth_last <= 0:
+            continue
+        synth_bid = float(lev5_runtime.get("ws_bid") or synth_last)
+        synth_ask = float(lev5_runtime.get("ws_ask") or synth_last)
+        log.warning(
+            "[WS][保底] 行情 dispatch 静默 %.0fs，注入 synthetic tick | last=%.2f",
+            now - last_dispatch,
+            synth_last,
+        )
+        synth_ctx: dict[str, Any] = {
+            "source": "ws_synthetic",
+            "instId": INST_ID,
+            "candle_features": lev5_runtime.get("candle_ctx") or {},
+        }
+        try:
+            await _dispatch_tick(
+                strat=strat,
+                metrics=metrics,
+                audit=audit,
+                run_id=run_id,
+                pipeline=pipeline,
+                loop=loop,
+                last=synth_last,
+                bid=synth_bid,
+                ask=synth_ask,
+                market_context=synth_ctx,
+                session_trade=session_trade,
+                account_client=account_client,
+                inv_state=inv_state,
+                lev5_guard=lev5_guard,
+                lev5_runtime=lev5_runtime,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            log.warning("[WS][保底] synthetic tick dispatch 失败: %s", e)
+        finally:
+            lev5_runtime["ws_dispatch_ts"] = time.time()
+
+
 async def _candle_refresh_loop(runtime: dict[str, Any]) -> None:
     """后台定期拉取 K 线特征缓存到 runtime，供 WS 模式 market_context 注入。
     WS ticker 速度快（200ms），但没有 K 线数据；此任务每 15s 刷新一次补充特征。
@@ -3212,6 +3278,22 @@ async def run() -> None:
                 await asyncio.sleep(REST_POLL_INTERVAL_SEC)
         else:
             logging.getLogger("websockets").setLevel(logging.WARNING)
+            if lev5_runtime is not None:
+                # _ws_price_feed_loop: 独立 WS 连接，实时写 ws_last/ws_ts 供 synthetic tick 使用
+                bg.append(asyncio.create_task(_ws_price_feed_loop(lev5_runtime)))
+                bg.append(asyncio.create_task(_ws_stall_watchdog_loop(
+                    strat=strat,
+                    metrics=metrics,
+                    audit=audit,
+                    run_id=run_id,
+                    pipeline=pipeline,
+                    loop=loop,
+                    session_trade=session_trade,
+                    account_client=account_client,
+                    inv_state=inv_state,
+                    lev5_guard=lev5_guard,
+                    lev5_runtime=lev5_runtime,
+                )))
             async for row in stream_tickers(OKX_WS_PUBLIC_URL_LIST, INST_ID):
                 p = _parse_tick(row)
                 if not p:
@@ -3243,6 +3325,9 @@ async def run() -> None:
                     lev5_guard=lev5_guard,
                     lev5_runtime=lev5_runtime,
                 )
+                # 记录本次 dispatch 时间，供 _ws_stall_watchdog_loop 判断 WS 是否静默
+                if lev5_runtime is not None:
+                    lev5_runtime["ws_dispatch_ts"] = time.time()
     finally:
         for t in bg:
             t.cancel()

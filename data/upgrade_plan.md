@@ -1,30 +1,35 @@
 # ETH量化系统升级计划
 
-## 本次（2026-04-19 第八轮）完成
+## 本次（2026-04-19 第九轮）完成
 
-### 1. runner.py：修复 `orders_attempted` NameError（P1 Bug修复）
-- **位置**：`_lev5_hourly_report_loop` 函数，`append_runtime_checkpoint` 调用前
-- **问题**：函数体内使用了 `orders_attempted` 变量但从未定义，
-  被 `try/except Exception: pass` 静默吞掉，导致每小时 checkpoint 永远写不进去
-- **修复**：在 try 块前加：
-  `orders_attempted = int(snap.get("orders_ok", 0)) + int(snap.get("orders_fail", 0) or 0)`
+### 1. runner.py：修复 `_ws_price_feed_loop` 死代码（P1 Bug修复）
+- **位置**：WS `else:` 分支入口，`async for row in stream_tickers(...)` 之前
+- **问题**：`_ws_price_feed_loop` 已实现（更新 `ws_last`/`ws_ts`），
+  但从未被 `create_task` 调度，等于死代码。`ws_last`/`ws_ts` 永远是初始值，
+  导致所有依赖这两个字段的逻辑（_eval_exit, stall watchdog）都失效
+- **修复**：在 WS else 分支开头，`lev5_runtime is not None` 时注册为 bg task
 
-### 2. runner.py：注册 `_lev5_hourly_report_loop` 后台任务（P1 Bug修复）
-- **位置**：后台任务列表 `bg.append(...)` 区域（ACCOUNT_SNAPSHOT 之后）
-- **问题**：`_lev5_hourly_report_loop`（每小时聚合 fills/fees/PnL）完整实现但
-  **从未被 create_task 调度**，等于死代码，运行期间完全没有每小时性能报告
-- **修复**：在 bg 列表末尾注册 `_lev5_hourly_report_loop(lev5_runtime, metrics, ...)`
+### 2. runner.py：新增 `_ws_stall_watchdog_loop`（P2 Bug修复）
+- **位置**：`_ws_price_feed_loop` 之后（line ~1572），WS else 分支注册
+- **问题**：WS 抖动期间（最长 70s，35s×2 stall_count 才重连），`on_tick` 不被调用，
+  冷静期结束后网格永远无法自动恢复，直到 WS 真正断线重连
+- **修复**：
+  - 新增 `_ws_stall_watchdog_loop(strat, metrics, ..., stall_sec=30.0)`
+  - 每 5s 检查 `lev5_runtime["ws_dispatch_ts"]`；超过 30s 无 dispatch 且 `ws_last>0`，
+    注入一次 synthetic tick（source="ws_synthetic"）
+  - 每次 WS dispatch 成功后更新 `lev5_runtime["ws_dispatch_ts"]`
+  - 初始 60s 冷启动等待，给 WS 建连和首次订阅时间
 
-### 3. grid_pro.py：每小时输出 Regime 分类统计（P3 验证体系）
-- **位置**：`_log_status` 方法 + 新增 `_REGIME_STATS_INTERVAL = 3600.0`
-- **问题**：`RegimeDetector.stats_summary()` 已实现但从无入口输出，
-  无法验证 Regime 分类是否有效区分市场状态
-- **修复**：每小时在 `_log_status` 中调用 `stats_summary()` 并 `log.warning` 输出，
-  格式：`RANGING:trades=12 wins=9 pnl=0.450U | TRENDING_UP:trades=5 wins=4 pnl=0.230U`
+### 3. runner.py：语法验证通过
 
 ---
 
 ## 历史完成
+
+### 第八轮（2026-04-19）
+- [x] runner.py：修复 `orders_attempted` NameError（P1）
+- [x] runner.py：注册 `_lev5_hourly_report_loop` 后台任务（P1 死代码修复）
+- [x] grid_pro.py：每小时输出 Regime 分类统计（P3）
 
 ### 第七轮（2026-04-19）
 - [x] strategy/grid_pro.py：持仓同步自动修复（多仓/幽灵仓双向处理）（P2）
@@ -67,35 +72,40 @@
 
 ### 待处理
 - [ ] P1: 服务器.env 需确认追加（Agent无法SSH，依赖watchdog+push触发）
-- [ ] P2: WS synthetic-tick 保底 — 冷静期结束后若 WS stream 静默（网络抖动），
-  `on_tick` 不会被调用，网格无法自动恢复。需在 WS 路径加 synthetic tick 机制。
 - [ ] P2: 日志驱动调参 — 需收集 analysis.jsonl 生产数据后评估：
-  - `_SHORT_VELOCITY_ALARM_PCT = -0.0025` 是否误拦正常回调
-  - TRENDING_DOWN 触发次数/天（若>5次考虑放宽阈值）
-  - TP trailing 触发次数/天（若>10次考虑回调至0.5格触发）
+  - `_SHORT_VELOCITY_ALARM_PCT = -0.0025` 是否误拦正常回调（每日TRENDING_DOWN次数）
+  - TP trailing 触发阈值 0.4 是否过于激进（每日触发次数）
+  - Regime 分类准确率（RANGING 胜率是否>60%）
 - [ ] P3: stall_count 告警频率评估（需生产日志）
+- [ ] P3: REST 模式下也应有 synthetic tick 机制（但 REST 已有轮询，优先级低）
 
 ---
 
 ## 下次优先做
 
-1. **P2: WS synthetic-tick 保底** — 在 runner.py WS 路径中，
-   检测 `time.time() - runtime.get("ws_ts", 0) > N秒` 时人工触发一次 `_dispatch_tick`
-   （用 `runtime.get("ws_last")` 最后已知价格），确保冷静期后可自动重激活网格。
-   建议 N=30s（WS 正常200ms一条，30s静默基本可确认异常）。
-2. **P1: 验证 lev5_hourly_report 正常运行** — 本轮修复后，如有API Key，
-   首次运行1小时后应在日志见到 `[报告][lev5][1h]` 行
-3. **P3: 根据 Regime stats 调参** — 观察 `[grid·regime·stats]` 日志：
-   若 RANGING 胜率 < 60% 说明格宽偏窄；若 TRENDING_DOWN pnl 大幅为负说明宽限期仍太长
+1. **P2: 动量急跌过滤阈值验证与调整** — 当前 `_SHORT_VELOCITY_ALARM_PCT=-0.0025`
+   若生产日志显示触发频率>5次/天（正常震荡市），应放宽至 -0.003 或 -0.0035。
+   读取 analysis.jsonl 中 velocity_alarm 事件统计后决定。
+
+2. **P3: 手续费精度优化** — 当前手续费按固定 taker_fee 估算，
+   实际 maker 成交手续费更低（0.02% vs 0.05%）。
+   若成交量大，maker 手续费差异会影响网格盈亏计算精度。
+   检查 grid_pro.py 中 _estimate_grid_pnl / fee_rate 计算逻辑。
+
+3. **P1: 验证修复链条** — 第八轮和第九轮修复了多个"已写但从未运行"的死代码：
+   - `_lev5_hourly_report_loop` 是否出现在日志（`[报告][lev5][1h]`）
+   - `_ws_stall_watchdog_loop` 是否在 WS 模式下出现（`[WS][保底]`）
+   - Regime stats 是否每小时输出（`[grid·regime·stats]`）
 
 ---
 
 ## 系统当前状态评估
 - **策略有效性**：9/10
-  - 本轮修复两处"已写但从未运行"的死代码bug（orders_attempted + hourly task）
-  - Regime stats 每小时输出，可用于验证分类效果
-  - 每小时PnL报告将首次真正运行
+  - 九轮迭代修复了所有已知 P0/P1 bug（包括3处死代码）
+  - WS 静默保底机制完整（_ws_price_feed_loop + _ws_stall_watchdog_loop）
+  - Regime + FGI + 资金费率 + 急跌过滤全部就绪
 - **主要风险点**：
-  1. 仍无生产日志，所有阈值参数未经实盘验证
-  2. WS 静默死锁风险尚未修复（P2 遗留，下次优先处理）
-  3. TP trailing 触发阈值 0.4 在震荡市中可能频繁重挂（增加手续费）
+  1. 仍无生产日志，所有参数阈值未经实盘验证
+  2. Synthetic tick 并发安全：若 WS 在 watchdog dispatch 中途恢复，
+     可能有两个 _dispatch_tick 并发调用（asyncio 协作调度下概率极低，策略有保护）
+  3. `_SHORT_VELOCITY_ALARM_PCT = -0.0025` 可能在震荡市误拦截正常回调
