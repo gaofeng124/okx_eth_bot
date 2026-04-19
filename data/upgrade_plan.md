@@ -109,3 +109,20 @@
   2. Synthetic tick 并发安全：若 WS 在 watchdog dispatch 中途恢复，
      可能有两个 _dispatch_tick 并发调用（asyncio 协作调度下概率极低，策略有保护）
   3. `_SHORT_VELOCITY_ALARM_PCT = -0.0025` 可能在震荡市误拦截正常回调
+
+---
+## 2026-04-19 人工干预修复（来自主会话）
+
+### 发现的问题
+- **严重**：watchdog.sh 用 `git pull` 遇到冲突就卡死，服务器停在 561dd25（9轮Agent提交全部丢失）
+- 手动 SSH 执行 `git reset --hard origin/main` 已恢复到最新版本 49186cd
+- run_strategy.py 已用最新代码重启
+
+### 已修复
+- watchdog.sh：`git pull` 改为 `git reset --hard origin/main` + `git clean -fd`，彻底消除冲突风险
+
+### Agent 下一步重点
+- P1: 验证第八/九轮修复是否生效（从 analysis.jsonl 查找 [WS][保底] / [grid·regime·stats] 日志）
+- P1: 服务器.env 补充 BOT_MAX_SESSION_HOURS=24（需通过代码方式，在 runner.py 默认值）
+- P2: 动量急跌阈值验证（_SHORT_VELOCITY_ALARM_PCT=-0.0025 是否误拦）
+- P2: 手续费精度（maker 0.02% vs 估算 0.04%，影响盈亏计算）

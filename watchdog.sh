@@ -65,9 +65,10 @@ while true; do
     if [ "$REMOTE_COMMIT" != "$LAST_COMMIT" ]; then
         log "=== 检测到 GitHub 新提交：$LAST_COMMIT → $REMOTE_COMMIT ==="
 
-        # 拉取新代码
-        git pull origin main --quiet 2>/dev/null
-        log "代码已更新"
+        # 强制同步到最新版本（reset --hard 永远不会产生冲突，比 git pull 更可靠）
+        git reset --hard origin/main --quiet 2>/dev/null
+        git clean -fd --quiet 2>/dev/null
+        log "代码已强制同步到 $REMOTE_COMMIT"
 
         # 重启系统
         restart_system
