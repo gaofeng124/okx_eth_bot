@@ -1,31 +1,14 @@
 {
-  "ran_at": "2026-04-19 CST (第九轮)",
-  "eth_24h_trend": "市场数据API本次不可达，使用历史背景判断",
-  "market_summary": "网络环境下无法直连OKX/Alternative.me API，市场数据缺失。系统本次专注于架构层Bug修复，修复两处影响WS模式稳定性的关键缺陷。",
+  "ran_at": "2026-04-19 CST (第十轮)",
+  "eth_24h_trend": "市场数据API暂不可达，使用代码分析替代",
+  "market_summary": "无实时市场数据。系统进行第十轮代码质量迭代：TP追踪节流、超时计时器修正、紧急平仓手续费精度三项改进。",
   "fear_greed_index": "获取失败",
   "funding_rate_trend": "获取失败",
-  "decision": "修复WS静默期网格无法恢复的P2问题：新增_ws_stall_watchdog_loop（30s无tick注入synthetic tick）+ 激活_ws_price_feed_loop死代码",
-  "param_changes": [],
-  "code_changes": [
-    {
-      "file": "quant/app/runner.py",
-      "type": "bug_fix",
-      "description": "_ws_price_feed_loop从未被create_task注册（死代码），现在在WS else分支激活",
-      "severity": "P1"
-    },
-    {
-      "file": "quant/app/runner.py",
-      "type": "new_feature",
-      "description": "新增_ws_stall_watchdog_loop：每5s检查ws_dispatch_ts，超30s无tick时注入synthetic tick，解决冷静期后WS静默导致网格无法恢复的问题",
-      "severity": "P2"
-    },
-    {
-      "file": "quant/app/runner.py",
-      "type": "instrumentation",
-      "description": "WS dispatch成功后更新lev5_runtime[ws_dispatch_ts]，为watchdog提供检测锚点",
-      "severity": "support"
-    }
+  "decision": "修复TP追踪过频(30s节流)+超时计时器逻辑+紧急平仓手续费精度(4bps→7bps)",
+  "param_changes": [
+    {"param": "_TP_TRAIL_MIN_INTERVAL", "old": "无（每tick均可触发）", "new": 30.0, "reason": "避免WS模式下每200ms cancel/replace一次TP，消耗API rate limit"},
+    {"param": "_EMERGENCY_CLOSE_FEE_BPS", "old": 4.0, "new": 7.0, "reason": "市价平仓实际为maker(2)+taker(5)=7bps，原来4bps低估手续费导致PnL高估"}
   ],
-  "risk_notes": "synthetic tick并发安全：若WS在watchdog dispatch进行中途恢复，可能有两个_dispatch_tick并发（asyncio协作调度下概率<1%，策略自身有状态保护）",
-  "next_focus": "P2: 根据生产analysis.jsonl评估_SHORT_VELOCITY_ALARM_PCT=-0.0025是否过于敏感；P3: 手续费精度优化（maker vs taker）"
+  "risk_notes": "无生产日志，所有参数阈值尚未经实盘验证。_SHORT_VELOCITY_ALARM_PCT=-0.0025可能在震荡行情误拦回调。",
+  "next_focus": "收集analysis.jsonl生产数据，验证velocity_alarm触发频率与TP追踪日志间隔，按实际数据调优"
 }

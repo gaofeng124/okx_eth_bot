@@ -297,6 +297,8 @@ class GridProStrategy(TickStrategy):
     _LIQ_WARN_DISTANCE      = 0.05   # 距爆仓价 < 5% 时告警并紧急平仓
     _MAINT_MARGIN_RATE      = 0.0065 # OKX ETH-USDT-SWAP 10x 维持保证金率
     _ENTRY_RETRY_BACKOFF    = [5.0, 15.0, 60.0, 300.0]  # 失败后等待秒数
+    _TP_TRAIL_MIN_INTERVAL  = 30.0   # TP 追踪最小间隔（秒），避免频繁 cancel/replace
+    _EMERGENCY_CLOSE_FEE_BPS = 7.0  # 紧急平仓费率：入场 maker(2bps) + 市价 taker(5bps)
 
     def __init__(
         self,
@@ -396,6 +398,7 @@ class GridProStrategy(TickStrategy):
         self._last_regime_stats_ts: float = 0.0
         self._last_stop_ts:  float = 0.0
         self._last_cooldown_log_ts: float = 0.0   # 冷静期日志节流
+        self._last_tp_trail_ts: float = 0.0       # 上次 TP 追踪时间（节流用）
         self._emergency_closing: bool = False
 
         # 止损计数（1h 窗口）
@@ -802,7 +805,8 @@ class GridProStrategy(TickStrategy):
         for s in held:
             pnl_pct = (mid - s.fill_price) / s.fill_price if s.fill_price > 0 else 0.0
             net = pnl_pct * self._notional(s.fill_sz, mid) * self._leverage
-            fee = self._roundtrip_fee(s.fill_sz, mid)
+            # 紧急平仓：入场 maker(2bps) + 市价 taker(5bps) = 7bps，比常规 4bps 高
+            fee = self._notional(s.fill_sz, mid) * self._EMERGENCY_CLOSE_FEE_BPS / 10000.0
             net_after = net - fee
             self._pnl.add(net_after)
             self._tracker.record(
@@ -960,11 +964,16 @@ class GridProStrategy(TickStrategy):
         """
         TP 追踪：若市场已大幅超过 TP 价格（说明价格继续涨），
         上调 TP 以锁住更多利润。
-        触发条件：mid > tp + 0.4格宽（原0.5格，更积极地锁利润）
-        新TP位置：mid - 0.25格宽（原0.3格，止盈更紧）
+        触发条件：mid > tp + 0.4格宽
+        新TP位置：mid - 0.25格宽
+        节流：两次追踪间隔不小于 _TP_TRAIL_MIN_INTERVAL（30s），避免频繁 API 调用。
+        成功追踪后重置 _tp_placed_ts，给TP新的超时窗口（市场上行时不应过早止损）。
         """
         if not self._tp_order_id or self._tp_price <= 0:
             return
+        now = time.time()
+        if now - self._last_tp_trail_ts < self._TP_TRAIL_MIN_INTERVAL:
+            return  # 节流：避免每个 tick 都 cancel/replace TP 单
         spacing_abs = self._grid_spacing * self._vwap
         if mid > self._tp_price + spacing_abs * 0.4:
             new_tp = mid - spacing_abs * 0.25
@@ -979,6 +988,8 @@ class GridProStrategy(TickStrategy):
                 oid = self._place_tp(self._total_held, new_tp)
                 if oid:
                     self._tp_order_id = oid
+                    self._tp_placed_ts = now   # 重置超时计时器：市场上行时不应过早触发止损
+                self._last_tp_trail_ts = now   # 无论成功与否都更新节流时间戳
 
     def _reset_grid_state(self, reason: str, now: float, cooldown: float = 10.0) -> None:
         """统一网格重置入口：撤销所有入场挂单，清空网格状态，设冷静期。"""
