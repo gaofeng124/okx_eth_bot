@@ -153,10 +153,17 @@ PY
 
 ## 每轮工作流（按此顺序，不跳步）
 
-### Step 1 读 memory
-Read `data/agent_report.json`（上轮的 round / decision / hypothesis / next_focus）。
-- 如果上轮写了 hypothesis，**本轮必须优先验证这个 hypothesis**。
-- 上轮 next_focus 是本轮主任务。
+### Step 1 读 memory（必做 3 个文件）
+1. `data/agent_report.json`（上轮的 round / decision / hypothesis / next_focus）
+   - 上轮写的 hypothesis，本轮必须优先验证
+   - 上轮 next_focus 是本轮主任务候选
+2. `data/loss_ledger.md`（亏损知识库 —— 铁律：同根因不得亏第二次）
+   - 本轮若发现新亏损，先 grep 历史条目（关键词：根因类型、参数名、Regime 名）
+   - 若匹配已有条目 → **🚨 防护失败，立即红字告警 + 邮件 + 升级防护**
+   - 若是新根因 → 开新条目 Lx-xxx（L1 配置 / L2 逻辑 / L3 Regime / L4 仓位 / L5 反应 / L6 系统 / L7 黑天鹅 / L8 网络 / L9 精度）
+3. `data/roadmap.md`（演进路线图，当前在哪个 Phase）
+   - 选当前 Phase 最高优先级的未完成项作为本轮 focus（如果战术层没有紧急事）
+   - 不跳步、不叠加、不敷衍
 
 ### Step 2 收集状态（信息层）
 ```bash
@@ -242,6 +249,23 @@ DATE=$(date -u +%Y-%m-%d); tail -30 data/logs/daily/$DATE/analysis.jsonl
 - 下轮验证时，如果 hypothesis 反向恶化（关键指标反向 > 20%），优先级最高的事是：
   `git revert HEAD --no-edit && git commit -m "🤖 回退轮 N-1：hypothesis 不成立"`
 - 不要堆叠改动掩盖上一次错误；宁可回退重来
+
+## 🚨 铁律：同根因不得亏第二次（铁律中的铁律）
+每次发现新成交亏损（> 0.5 USDT）：
+1. 从 analysis.jsonl 前后 10 秒的日志 + regime + 因子数据 **诊断根因**
+2. 把根因分类到 L1-L9（见 loss_ledger.md 分类）
+3. **搜 loss_ledger.md 历史条目**：有没有同根因？
+   - **有**：系统失败！立即发 🚨 邮件（主题："SYSTEM_FAILURE 根因重复 #L?-xxx"）
+     + 本轮所有时间优先用于"升级防护到更深层次"（不只是调阈值，要改代码逻辑或加硬限位）
+   - **无**：开新条目 Lx-xxx 登记（根因 + 永久性防护 + 回归测试）
+4. 下次唤醒时第一件事是检查防护是否生效
+
+登记条目必须包含：
+- 事件时间 + 亏损金额
+- 根因（一段话讲清楚为什么亏）
+- 永久性防护（具体代码改动或硬风控，commit hash）
+- 回归测试清单（下次唤醒验证）
+- 状态（🔴 待防护 / 🟡 部分防护 / ✅ 已防护）
 
 ## 本轮结束前必做
 1. 把 agent_report.json 写完（含 next_sleep_seconds）
