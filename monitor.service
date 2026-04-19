@@ -1,0 +1,18 @@
+[Unit]
+Description=ETH Bot Real-time Monitor Daemon
+After=network.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/okx_eth_bot
+ExecStart=/root/okx_eth_bot/.venv/bin/python /root/okx_eth_bot/monitor.py
+Restart=always
+RestartSec=10
+StandardOutput=append:/root/okx_eth_bot/data/logs/monitor.log
+StandardError=append:/root/okx_eth_bot/data/logs/monitor.log
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
