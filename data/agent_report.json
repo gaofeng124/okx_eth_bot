@@ -1,24 +1,31 @@
 {
-  "ran_at": "2026-04-19 00:00:00 CST",
-  "eth_24h_trend": "外部API无法访问，市场数据缺失",
-  "market_summary": "本次无法获取ETH实时价格与恐贪指数（网络环境限制），基于代码审查进行策略修复。",
-  "fear_greed_index": "N/A（API不可达）",
-  "funding_rate_trend": "N/A（API不可达）",
-  "decision": "修复持仓同步自动修复（幽灵仓清除+裸露仓TP补挂）+ TP追踪触发阈值从0.5格收紧至0.4格",
-  "param_changes": [
+  "ran_at": "2026-04-19 (第八轮) CST",
+  "eth_24h_trend": "外部API不可达，无法获取实时数据",
+  "market_summary": "网络受限无法拉取ETH价格，本轮专注代码质量修复。系统已连续8轮迭代，P0参数问题早已修复，本轮清除两处已写但从未被调度的死代码（orders_attempted未定义+hourly report loop从未注册），并增加Regime分类统计每小时输出。",
+  "fear_greed_index": "获取失败（网络受限）",
+  "funding_rate_trend": "获取失败（网络受限）",
+  "decision": "修复runner.py两处P1死代码Bug（orders_attempted NameError + _lev5_hourly_report_loop从未注册），新增grid_pro每小时Regime分类统计日志",
+  "param_changes": [],
+  "code_changes": [
     {
-      "param": "_maybe_trail_tp触发阈值",
-      "old": "tp + 0.5格宽",
-      "new": "tp + 0.4格宽",
-      "reason": "更积极追踪强势行情，减少利润回吐"
+      "file": "quant/app/runner.py",
+      "change": "在_lev5_hourly_report_loop的try块前加orders_attempted=snap.ok+snap.fail",
+      "type": "bug_fix",
+      "priority": "P1"
     },
     {
-      "param": "_maybe_trail_tp新TP位置",
-      "old": "mid - 0.3格宽",
-      "new": "mid - 0.25格宽",
-      "reason": "锁住更多利润，防止价格回落"
+      "file": "quant/app/runner.py",
+      "change": "在bg列表末尾注册_lev5_hourly_report_loop为后台任务（此前从未被调度）",
+      "type": "bug_fix",
+      "priority": "P1"
+    },
+    {
+      "file": "quant/strategy/grid_pro.py",
+      "change": "新增_REGIME_STATS_INTERVAL=3600，_log_status中每小时调用regime.stats_summary()并log.warning输出",
+      "type": "enhancement",
+      "priority": "P3"
     }
   ],
-  "risk_notes": "TP trailing更积极（0.4格触发），若行情震荡可能频繁重挂单，增加少量手续费消耗；需生产日志验证是否合理",
-  "next_focus": "收集生产日志后评估持仓同步修复触发频率和TP trailing触发频率，决定是否需要回调参数"
+  "risk_notes": "WS静默死锁风险尚未修复（冷静期结束后若无新tick，网格无法自动恢复）",
+  "next_focus": "P2: runner.py WS路径加synthetic-tick保底（检测ws_ts超30s则用最后价格强制dispatch_tick）"
 }

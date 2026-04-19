@@ -281,6 +281,7 @@ class GridProStrategy(TickStrategy):
 
     # ── 默认参数 ─────────────────────────────────────────────────────────────
     _STATUS_LOG_INTERVAL   = 30.0    # 每 30s 打印一次状态摘要
+    _REGIME_STATS_INTERVAL = 3600.0  # 每小时打印 Regime 分类统计（验证分类有效性）
     _POSITION_SYNC_INTERVAL = 10.0   # 每 10s 从 API 同步持仓（校验内部状态）
     _FUNDING_CHECK_INTERVAL = 30.0   # 每 30s 刷新资金费率
     _QUOTE_MAX_AGE          = 5.0    # 报价超过 5s 视为过期
@@ -392,6 +393,7 @@ class GridProStrategy(TickStrategy):
         self._last_pos_sync: float = 0.0
         self._last_fund_ts:  float = 0.0
         self._last_status_ts: float = 0.0
+        self._last_regime_stats_ts: float = 0.0
         self._last_stop_ts:  float = 0.0
         self._last_cooldown_log_ts: float = 0.0   # 冷静期日志节流
         self._emergency_closing: bool = False
@@ -1300,6 +1302,18 @@ class GridProStrategy(TickStrategy):
             slot_states,
             session.get("win_rate", 0) * 100,
         )
+        if now - self._last_regime_stats_ts >= self._REGIME_STATS_INTERVAL:
+            self._last_regime_stats_ts = now
+            stats = self._regime.stats_summary()
+            log.warning(
+                "[grid·regime·stats] 每小时Regime分类统计: %s",
+                " | ".join(
+                    f"{r}:trades={v['trades']} wins={v['wins']} pnl={v['total_pnl']:.3f}U"
+                    for r, v in stats.items()
+                    if v["trades"] > 0
+                ) or "暂无成交数据",
+            )
+
         try:
             from quant.detailed_daily_log import record_analysis
 

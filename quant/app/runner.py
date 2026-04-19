@@ -2312,6 +2312,7 @@ async def _lev5_hourly_report_loop(
             runtime.get("diag_expected_edge_bps"),
             runtime.get("diag_adverse_slip_bps"),
         )
+        orders_attempted = int(snap.get("orders_ok", 0)) + int(snap.get("orders_fail", 0) or 0)
         try:
             append_runtime_checkpoint(
                 "lev5_hourly_report",
@@ -3084,6 +3085,20 @@ async def run() -> None:
                     account_client,
                     INST_ID,
                     ACCOUNT_SNAPSHOT_INTERVAL_SEC,
+                )
+            )
+        )
+    if lev5_runtime is not None:
+        bg.append(
+            asyncio.create_task(
+                _lev5_hourly_report_loop(
+                    lev5_runtime,
+                    metrics,
+                    account_client=account_client,
+                    session_trade=session_trade,
+                    audit=audit,
+                    run_id=run_id,
+                    inst_id=INST_ID,
                 )
             )
         )
