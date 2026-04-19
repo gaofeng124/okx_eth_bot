@@ -958,18 +958,18 @@ class GridProStrategy(TickStrategy):
         """
         TP 追踪：若市场已大幅超过 TP 价格（说明价格继续涨），
         上调 TP 以锁住更多利润。
+        触发条件：mid > tp + 0.4格宽（原0.5格，更积极地锁利润）
+        新TP位置：mid - 0.25格宽（原0.3格，止盈更紧）
         """
         if not self._tp_order_id or self._tp_price <= 0:
             return
-        # 如果当前价格超过 TP 的 50% 额外格宽，上调 TP
-        if mid > self._tp_price + self._grid_spacing * self._vwap * 0.5:
+        spacing_abs = self._grid_spacing * self._vwap
+        if mid > self._tp_price + spacing_abs * 0.4:
+            new_tp = mid - spacing_abs * 0.25
             log.info(
-                "[grid] TP 追踪上调：mid=%.2f > tp=%.2f + 半格，新 TP=%.2f",
-                mid, self._tp_price,
-                mid - self._grid_spacing * self._vwap * 0.3,
+                "[grid] TP 追踪上调：mid=%.2f > tp=%.2f + 0.4格，新TP=%.2f",
+                mid, self._tp_price, new_tp,
             )
-            # 新 TP = mid 回落 30% 格宽处
-            new_tp = mid - self._grid_spacing * self._vwap * 0.3
             if new_tp > self._tp_price:
                 self._cancel_order(self._tp_order_id)
                 self._tp_order_id = ""
@@ -1205,27 +1205,77 @@ class GridProStrategy(TickStrategy):
 
     def _position_sync_check(self, runtime: dict[str, Any], now: float) -> None:
         """
-        每 10s 从 runtime 中获取实际持仓，与内部记录对比。
-        若不一致（交易所有仓但内部无记录），记录警告。
+        每 10s 从 runtime 中获取实际持仓，与内部记录对比并自动修复：
+        - 交易所 > 内部 + 0.5张：补录差额，用 UPL 反推估算成本，重挂 TP
+        - 交易所 < 内部 - 0.5张（幽灵仓）：以交易所为准，清除多余内部状态
         """
         if now - self._last_pos_sync < self._POSITION_SYNC_INTERVAL:
             return
         self._last_pos_sync = now
-        # swap_position_summary 在 lev5_runtime 中，通过 strategy_runtime 或直接键访问
         strat_rt = runtime.get("strategy_runtime") or {}
         pos_summary = runtime.get("swap_position_summary") or strat_rt.get("swap_position_summary")
         if pos_summary is None:
-            # runner 尚未同步持仓数据（冷启动阶段），跳过
             return
         exchange_long = float(pos_summary.get("long_sz") or 0.0)
         internal_held = self._total_held
+        diff = exchange_long - internal_held
 
-        if abs(exchange_long - internal_held) > 0.5:
+        if diff > 0.5:
+            # 交易所有仓但内部无记录 → 用 UPL 反推估算成本价，补录内部状态
+            long_upl = float(pos_summary.get("long_upl") or 0.0)
+            mid = self._last_bid if self._last_bid > 0 else self._vwap
+            if mid > 0 and exchange_long > 0:
+                # UPL ≈ (mid - avg_entry) × sz × ct_val × leverage
+                notional_factor = exchange_long * self._ct_val * self._leverage
+                est_entry = mid - long_upl / notional_factor if notional_factor > 0 else mid
+                # 合理性校验：成本价偏离当前价 >5% 则降级为用当前价
+                if est_entry <= 0 or abs(est_entry - mid) / mid > 0.05:
+                    est_entry = mid
+            else:
+                est_entry = mid if mid > 0 else 0.0
+
             log.warning(
-                "[grid] 持仓不一致！交易所=%.1f 内部=%.1f，请检查",
+                "[grid] 持仓不一致！交易所=%.1f 内部=%.1f 差额=%.1f est_entry=%.2f，自动补录",
+                exchange_long, internal_held, diff, est_entry,
+            )
+            if est_entry > 0:
+                self._vwap_value += est_entry * diff
+                self._total_held = exchange_long
+                self._vwap = self._vwap_value / self._total_held
+                if self._grid_spacing <= 0:
+                    self._grid_spacing = self._vol.spacing_pct(
+                        self._atr_mult, self._min_sp, self._max_sp
+                    ) or self._min_sp
+                self._update_tp()
+                log.info(
+                    "[grid] 持仓修复完成：total_held=%.1f vwap=%.2f TP已补挂",
+                    self._total_held, self._vwap,
+                )
+
+        elif diff < -0.5:
+            # 内部认为有仓但交易所实际为0 → 幽灵持仓，清除防止错误操作
+            log.warning(
+                "[grid] 幽灵持仓！交易所=%.1f < 内部=%.1f，清除内部状态",
                 exchange_long, internal_held,
             )
-            # 以交易所为准（保守处理：不自动修改内部状态，防止过度交易）
+            if exchange_long < 0.5:
+                # 交易所完全无仓：全部清除
+                self._reset_grid()
+            else:
+                # 交易所有部分仓位：以交易所为准等比缩减
+                ratio = exchange_long / internal_held
+                self._total_held = exchange_long
+                self._vwap_value = self._vwap * exchange_long
+                held = [s for s in self._slots if s.state == _S.HOLDING]
+                kept = 0.0
+                for s in held:
+                    if kept + s.fill_sz <= exchange_long + 0.5:
+                        kept += s.fill_sz
+                    else:
+                        s.state = _S.EMPTY
+                        s.fill_sz = 0.0
+                        s.fill_price = 0.0
+                log.info("[grid] 幽灵仓缩减完成：total_held=%.1f", self._total_held)
 
     # ══════════════════════════════════════════════════════════════════════════
     # 定期状态日志

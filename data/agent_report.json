@@ -1,32 +1,24 @@
 {
-  "ran_at": "2026-04-18 本轮（第六轮）CST",
-  "eth_24h_trend": "市场API本轮不可达，基于历史计划继续优化",
-  "market_summary": "无实时数据。基于系统内部状态分析：本轮发现并修复重启后持仓无TP的P1级Bug，该缺陷在每次4h重启时均会导致存量仓位裸露运行，严重影响风控完整性。",
-  "fear_greed_index": "无法获取（API不通）",
-  "funding_rate_trend": "无法获取（API不通）",
-  "decision": "修复重启后TP裸露Bug + 对齐macro_bearish阈值 + FGI贪婪+趋势增档，三项实质改进",
+  "ran_at": "2026-04-19 00:00:00 CST",
+  "eth_24h_trend": "外部API无法访问，市场数据缺失",
+  "market_summary": "本次无法获取ETH实时价格与恐贪指数（网络环境限制），基于代码审查进行策略修复。",
+  "fear_greed_index": "N/A（API不可达）",
+  "funding_rate_trend": "N/A（API不可达）",
+  "decision": "修复持仓同步自动修复（幽灵仓清除+裸露仓TP补挂）+ TP追踪触发阈值从0.5格收紧至0.4格",
   "param_changes": [
     {
-      "param": "macro_bearish threshold",
-      "old": -0.0015,
-      "new": -0.0020,
-      "reason": "与regime.py _MACRO_DOWN_KILL对齐，消除Regime=RANGING但grid不开格的矛盾"
+      "param": "_maybe_trail_tp触发阈值",
+      "old": "tp + 0.5格宽",
+      "new": "tp + 0.4格宽",
+      "reason": "更积极追踪强势行情，减少利润回吐"
     },
     {
-      "param": "FGI>60+TRENDING_UP n_active",
-      "old": "不变",
-      "new": "+1档（上限max_levels）",
-      "reason": "牛市贪婪行情顺势加仓，与FGI<25减1档构成对称情绪感知体系"
+      "param": "_maybe_trail_tp新TP位置",
+      "old": "mid - 0.3格宽",
+      "new": "mid - 0.25格宽",
+      "reason": "锁住更多利润，防止价格回落"
     }
   ],
-  "bug_fixes": [
-    {
-      "bug": "重启后持仓无TP",
-      "severity": "P1",
-      "root_cause": "_cancel_stale_orders撤销全部旧TP，但无逻辑重挂；_tp_order_id保持空字符串",
-      "fix": "on_tick检测_total_held>0 and not _tp_order_id，自动计算格宽并调用_update_tp()"
-    }
-  ],
-  "risk_notes": "缺乏生产日志，所有参数阈值未经实盘验证；4h重启后存量仓位现已有TP保护",
-  "next_focus": "收集analysis.jsonl日志，统计TRENDING_DOWN触发频率和short_drop拦截次数，验证各阈值合理性"
+  "risk_notes": "TP trailing更积极（0.4格触发），若行情震荡可能频繁重挂单，增加少量手续费消耗；需生产日志验证是否合理",
+  "next_focus": "收集生产日志后评估持仓同步修复触发频率和TP trailing触发频率，决定是否需要回调参数"
 }
