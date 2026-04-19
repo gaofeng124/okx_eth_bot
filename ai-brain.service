@@ -1,0 +1,21 @@
+[Unit]
+Description=OKX ETH Bot AI Brain (Claude-powered 24h monitor)
+After=network.target okx-watchdog.service
+Wants=okx-watchdog.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/okx_eth_bot
+Environment=PATH=/opt/nodejs/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart=/root/okx_eth_bot/.venv/bin/python /root/okx_eth_bot/ai_brain.py
+Restart=always
+RestartSec=30
+# 每轮 Claude CLI 最长 15 min，进程启动超时给足余量
+TimeoutStartSec=0
+# 日志走 journald + 文件 (ai_brain.py 自身写 data/logs/ai_brain.log)
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
