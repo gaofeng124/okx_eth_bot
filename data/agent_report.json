@@ -1,27 +1,19 @@
 {
-  "ran_at": "2026-04-20 11:10 UTC (第十四轮)",
-  "eth_price": "N/A (网络受限)",
+  "ran_at": "2026-04-20 12:10 UTC",
+  "eth_price": "N/A (网络不可达)",
   "eth_24h_change_pct": "N/A",
-  "fear_greed_index": "N/A (网络受限)",
-  "funding_rate": "N/A (网络受限)",
-  "market_summary": "无法获取实时行情（网络受限），基于代码逻辑分析改进。系统持续在生产运行中，本轮专注鲁棒性与策略精度提升。",
-  "decision": "runner.py WS主循环增加dispatch_tick异常防护；grid_pro.py _maybe_trail_tp增加RANGING模式感知（触发阈值0.3格、步长0.15格）",
+  "fear_greed_index": "N/A (获取失败)",
+  "funding_rate": "N/A (获取失败)",
+  "market_summary": "市场数据无法获取（网络限制）。系统参数状态良好：GRID_DAILY_TARGET=999，BOT_MAX_SESSION=24，P0/P1问题已在前14轮全部修复。本轮执行P3优化：整体止损从固定5U改为动态计算（账户余额×10%，最低4U）。",
+  "decision": "grid_pro.py 整体止损从固定5.0U升级为动态计算：max(4.0, equity×10%)，账户成长时止损随之放宽，账户缩水时自动收紧",
   "param_changes": [],
   "code_changes": [
     {
-      "file": "quant/app/runner.py",
-      "summary": "WS主循环_dispatch_tick调用增加try/except防护：异常时log.error+continue，避免单次tick异常崩溃整个运行循环"
-    },
-    {
       "file": "quant/strategy/grid_pro.py",
-      "summary": "_maybe_trail_tp增加Regime感知：RANGING模式触发阈值0.3格（原0.4）+步长0.15格（原0.25），更早锁定横盘利润防止均值回归吃掉浮盈"
-    },
-    {
-      "file": "quant/strategy/regime.py",
-      "summary": "修正_MIN_HOLD_SEC相关过期注释（原说8s实际已改为20s）"
+      "summary": "整体浮亏止损改为动态计算 _eff_whole_stop = max(4.0, equity*0.10)，日志中输出有效阈值和当前余额"
     }
   ],
-  "risk_notes": "WS dispatch异常防护可能掩盖罕见but严重的bug（新防护会log.error便于排查）；RANGING TP trail步长0.15格在快速上涨时可能导致TP过早成交错失利润",
-  "next_focus": "P1: 验证生产日志确认dispatch_tick异常防护未触发异常警报；P2: 收集RANGING模式下TP trail成交价分布数据，验证0.15格步长是否最优（可调整为0.10~0.20格）",
-  "round_number": "14"
+  "risk_notes": "动态止损依赖 usdt_avail_swap 作为余额代理，若账户余额数据异常（返回0），fallback为固定的 self._whole_stop=5.0U，安全兜底已有保障",
+  "next_focus": "P1: 检查生产日志确认dispatch_tick异常防护未频繁触发；P3: 考虑 GRID_DRAWDOWN_FROM_PEAK_USDT 也做动态化（当前固定2.0U较紧）",
+  "round_number": "15"
 }

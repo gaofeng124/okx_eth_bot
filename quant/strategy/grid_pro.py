@@ -1555,9 +1555,12 @@ class GridProStrategy(TickStrategy):
                     return None
 
         # ── 6. 整体浮亏止损 ─────────────────────────────────────────────────
+        # 动态止损：账户余额 * 10%，最低 4U 兜底；账户增长时止损同步放宽，缩水时收紧
         unrealized = self._calc_unrealized(mid)
-        if unrealized <= -self._whole_stop:
-            log.warning("[grid] 整体止损: 浮亏=%.4f USDT", unrealized)
+        _eff_whole_stop = max(4.0, (equity or 0.0) * 0.10) if equity else self._whole_stop
+        if unrealized <= -_eff_whole_stop:
+            log.warning("[grid] 整体止损: 浮亏=%.4f USDT (有效阈值=%.2fU, 余额=%.2fU)",
+                        unrealized, _eff_whole_stop, equity or 0.0)
             self._emergency_close("whole_grid_stop", mid)
             return None
 
