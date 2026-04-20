@@ -476,6 +476,15 @@ class D:
     GRID_CONTRACTS_PER_SLOT = 1.0
     # 单仓硬止损：任一 HOLDING 槽位浮亏超此值立即市价平该仓（不等整体止损）
     GRID_PER_SLOT_STOP_USDT = 1.5
+    # 【L2 做空】2026-04-20 新增
+    # GRID_DIRECTION: "long" / "short" — 决定当前策略方向（一次只一个方向，不对冲）
+    #  默认 "long" 保持向后兼容；改为 "short" 时策略完全镜像做空
+    GRID_DIRECTION = "long"
+    # 做空时每格张数（比 long 保守：0.1 张 = 0.01 ETH ≈ 23U 名义）
+    # L2 首次上线保守起步，验证一周后再与 long 对齐
+    GRID_CONTRACTS_PER_SLOT_SHORT = 0.1
+    # TP 距离倍率（AI R78 引入）：实际 TP = spacing × tp_mult
+    GRID_TP_MULT = 1.5
 
 
 # ========== 连接 / 账户（.env 必填项）==========
@@ -916,6 +925,9 @@ GRID_DAILY_TARGET_USDT     = _ef("GRID_DAILY_TARGET_USDT",     D.GRID_DAILY_TARG
 GRID_DRAWDOWN_FROM_PEAK_USDT = _ef("GRID_DRAWDOWN_FROM_PEAK_USDT", D.GRID_DRAWDOWN_FROM_PEAK_USDT)
 GRID_CONTRACTS_PER_SLOT = _ef("GRID_CONTRACTS_PER_SLOT", D.GRID_CONTRACTS_PER_SLOT)
 GRID_PER_SLOT_STOP_USDT = _ef("GRID_PER_SLOT_STOP_USDT", D.GRID_PER_SLOT_STOP_USDT)
+GRID_DIRECTION = _es("GRID_DIRECTION", D.GRID_DIRECTION).strip().lower()
+GRID_CONTRACTS_PER_SLOT_SHORT = _ef("GRID_CONTRACTS_PER_SLOT_SHORT", D.GRID_CONTRACTS_PER_SLOT_SHORT)
+GRID_TP_MULT = _ef("GRID_TP_MULT", D.GRID_TP_MULT)
 DATA_DIR               = _es("DATA_DIR",               "./data")
 
 

@@ -37,10 +37,10 @@ log = get_logger(__name__)
 # ══════════════════════════════════════════════════════════════════════════════
 
 # OKX 错误码（下单失败时区分原因）
-_ERR_POST_ONLY   = "51000"   # post_only 会穿越盘口，拒绝 → 调整价格重试
-_ERR_LOT_SIZE    = "51008"   # 张数精度错误 → 修正 sz 重试
-_ERR_PRICE_BAND  = "51020"   # 价格超出涨跌停 → 跳过
-_ERR_NO_MARGIN   = "51011"   # 保证金不足 → 不重试，报警
+_ERR_POST_ONLY   = "51016"   # post_only 会穿越盘口，拒绝 → 调整价格重试
+_ERR_NO_MARGIN   = "51008"   # 保证金不足 → 不重试，报警
+_ERR_PRICE_BAND  = "51006"   # 价格超出涨跌停 → 跳过
+_ERR_LOT_SIZE    = "51020"   # 张数精度错误 → 修正 sz 重试
 _ERR_REDUCE_ONLY = "51023"   # 无持仓可减 → 正常（可能已平）
 _RETRYABLE_SCODES = {_ERR_POST_ONLY, _ERR_LOT_SIZE}
 
@@ -287,7 +287,7 @@ class GridProStrategy(TickStrategy):
     _QUOTE_MAX_AGE          = 5.0    # 报价超过 5s 视为过期
     _SPREAD_MAX_BPS         = 12.0   # 点差超过 12bps 不下单
     _VELOCITY_ALARM_PCT       = -0.0020 # -0.2% / 20tick 长窗口接飞刀警报
-    _SHORT_VELOCITY_ALARM_PCT = -0.0030 # -0.30% / 4tick 短窗口急跌过滤（20-tick主窗口已提供飞刀保护，短窗口放宽减少假触发）
+    _SHORT_VELOCITY_ALARM_PCT = -0.0025 # -0.25% / 4tick 短窗口急跌过滤（更敏感）
     _FUNDING_PAUSE_WINDOW   = 600.0  # 距资金费结算 10min 内暂停开新格
     _FUNDING_RATE_MAX       = 0.0005 # 资金费率 > 0.05% 时抑制做多
     _STOP_COUNT_1H_LIMIT    = 3      # 1小时内触发3次止损 → 延长冷静期
@@ -325,6 +325,9 @@ class GridProStrategy(TickStrategy):
         warmup_ticks: int = 200,
         contracts_per_slot: float = 1.0,
         per_slot_stop_usdt: float = 0.0,
+        tp_mult: float = 1.0,
+        grid_direction: str = "long",
+        contracts_per_slot_short: float = 0.1,
     ) -> None:
         self._inst_id     = inst_id
         self._leverage    = leverage
@@ -342,10 +345,30 @@ class GridProStrategy(TickStrategy):
         self._sync_iv     = sync_interval_sec
         self._fee_bps     = roundtrip_fee_bps
         self._warmup_need = warmup_ticks
+
+        # ── 方向配置（双向网格支持）────────────────────────────────────────────
+        # grid_direction="long" → 传统做多网格（买低卖高）
+        # grid_direction="short"→ 做空网格（卖高买低），镜像逻辑
+        # 无效输入时 fallback 到 "long"，保持向后兼容
+        _dir = str(grid_direction or "long").lower().strip()
+        if _dir not in ("long", "short"):
+            log.warning("[grid] 非法 grid_direction=%r，fallback 为 long", grid_direction)
+            _dir = "long"
+        self._direction = _dir
+        # _side 为当前活跃方向（未来扩展 "both" 模式时用）
+        self._side = self._direction
+
         # 单格张数（与账户规模匹配：小账户用分数张；lotSz 通常 0.01 支持）
-        self._contracts_per_slot = max(0.01, float(contracts_per_slot))
+        # 做多 / 做空 各自独立配置，按当前方向选出 active 值
+        self._contracts_per_slot_long  = max(0.01, float(contracts_per_slot))
+        self._contracts_per_slot_short = max(0.01, float(contracts_per_slot_short))
+        self._contracts_per_slot = (
+            self._contracts_per_slot_short if self._side == "short"
+            else self._contracts_per_slot_long
+        )
         # 单仓硬止损（USDT）：任一 HOLDING 槽位浮亏超此值立即市价平该仓；0=关闭
         self._per_slot_stop = max(0.0, float(per_slot_stop_usdt))
+        self._tp_mult = max(0.5, float(tp_mult))  # TP距离倍率，>=0.5防御
 
         # 仪器规格（启动时从 API 获取）
         self._tick_sz: float = 10 ** (-price_decimals)
@@ -397,6 +420,7 @@ class GridProStrategy(TickStrategy):
         self._ema_fast  = StreamingEMA(alpha=0.12)
         self._ema_slow  = StreamingEMA(alpha=0.04)
         self._ema_macro = StreamingEMA(alpha=0.003)
+        self._ema_book_imb = StreamingEMA(alpha=0.08)  # L3-001: 盘口不平衡 EMA
 
         # 运行时状态
         self._warmup_ticks:  int   = 0
@@ -434,13 +458,54 @@ class GridProStrategy(TickStrategy):
 
         # 关键风控配置一次性打印（便于日志核对）
         log.info(
-            "[grid] 风控配置 lev=%.1fx grid_levels=%d contracts_per_slot=%.3f "
+            "[grid] 风控配置 direction=%s lev=%.1fx grid_levels=%d contracts_per_slot=%.3f "
             "whole_stop=%.2fU daily_stop=%.2fU per_slot_stop=%.2fU peak_dd=%.2fU "
-            "ct_val_init=%.3f",
-            self._leverage, self._max_levels, self._contracts_per_slot,
+            "ct_val_init=%.3f tp_mult=%.2f",
+            self._direction, self._leverage, self._max_levels, self._contracts_per_slot,
             self._whole_stop, self._pnl._stop, self._per_slot_stop,
-            self._pnl._drawdown_limit, self._ct_val,
+            self._pnl._drawdown_limit, self._ct_val, self._tp_mult,
         )
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # 方向辅助（long / short 镜像计算）
+    # ══════════════════════════════════════════════════════════════════════════
+
+    @property
+    def _is_short(self) -> bool:
+        """当前是否为做空方向。"""
+        return self._side == "short"
+
+    def _entry_api_side(self) -> str:
+        """入场订单 side：做多=buy，做空=sell。"""
+        return "sell" if self._is_short else "buy"
+
+    def _exit_api_side(self) -> str:
+        """出场（TP/紧急平仓）订单 side：做多=sell，做空=buy。"""
+        return "buy" if self._is_short else "sell"
+
+    def _grid_spacing_sign(self) -> float:
+        """
+        入场挂单方向：
+          long  → 在中心下方挂买单（-1）
+          short → 在中心上方挂卖单（+1）
+        """
+        return 1.0 if self._is_short else -1.0
+
+    def _tp_spacing_sign(self) -> float:
+        """
+        TP 相对 VWAP 方向：
+          long  → TP 在 VWAP 上方（+1）
+          short → TP 在 VWAP 下方（-1）
+        """
+        return -1.0 if self._is_short else 1.0
+
+    def _pnl_sign(self) -> float:
+        """
+        PnL 方向乘子：
+          long  → (mid - fill) > 0 盈利（+1）
+          short → (mid - fill) < 0 盈利（-1），用 raw * (-1) 得正值
+        """
+        return -1.0 if self._is_short else 1.0
 
     # ══════════════════════════════════════════════════════════════════════════
     # 启动对账
@@ -471,14 +536,6 @@ class GridProStrategy(TickStrategy):
                 "[grid] 仪器规格 tickSz=%s lotSz=%s minSz=%s ctVal=%s",
                 self._tick_sz, self._lot_sz, self._min_sz, self._ct_val,
             )
-            eff_sz = self._round_sz(self._contracts_per_slot)
-            if abs(eff_sz - self._contracts_per_slot) > 1e-9:
-                log.warning(
-                    "[grid] contracts_per_slot=%.3f → 实际下单张数=%.6g"
-                    "（受lotSz=%s minSz=%s约束，每张%.4f ETH）",
-                    self._contracts_per_slot, eff_sz,
-                    self._lot_sz, self._min_sz, self._ct_val,
-                )
         except Exception as e:
             log.warning("[grid] 获取仪器规格失败，使用默认值: %s", e)
 
@@ -519,32 +576,55 @@ class GridProStrategy(TickStrategy):
             log.warning("[grid] 查询残留挂单失败: %s", e)
 
     def _sync_existing_position(self) -> None:
-        """同步已有持仓到内部状态，避免重启后不知道自己有仓。"""
+        """同步已有持仓到内部状态，避免重启后不知道自己有仓。
+        OKX net mode：pos 字段 >0 表示多仓，<0 表示空仓。
+        若已有仓与配置 direction 冲突，大声警告但保留现状（用户选择优先）。
+        """
         try:
             resp = self._rest.request(
                 "GET",
                 f"/api/v5/account/positions?instType=SWAP&instId={self._inst_id}",
             )
             for pos in (resp.get("data") or []):
-                sz = float(pos.get("pos") or 0)
+                sz_raw = float(pos.get("pos") or 0)
                 avg_px = float(pos.get("avgPx") or 0)
-                if sz > 0 and avg_px > 0:
+                if sz_raw == 0 or avg_px <= 0:
+                    continue
+
+                # 判定实际仓位方向并与配置比对
+                is_long_pos = sz_raw > 0
+                pos_dir = "long" if is_long_pos else "short"
+                if pos_dir != self._direction:
                     log.warning(
-                        "[grid] 检测到已有多仓 %.1f张 avgPx=%.2f，加入追踪",
-                        sz, avg_px,
+                        "[grid] ⚠️ 检测到 %s 方向持仓 %.2f张 但配置 direction=%s —— "
+                        "保持原持仓状态，策略将按配置方向操作（不会自动反手）",
+                        pos_dir, sz_raw, self._direction,
                     )
-                    # 分配到槽位（按持仓量分配到前 N 个槽）
-                    self._total_held = sz
-                    self._vwap = avg_px
-                    self._vwap_value = sz * avg_px
-                    slots_to_fill = min(int(sz), len(self._slots))
-                    for i in range(slots_to_fill):
-                        self._slots[i].state = _S.HOLDING
-                        self._slots[i].fill_price = avg_px
-                        self._slots[i].fill_sz = 1.0
-                    self._grid_active = True
-                    self._grid_center = avg_px
-                    # 将在第一次 on_tick 中计算 spacing 并挂 TP
+
+                sz = abs(sz_raw)
+                # 按 contracts_per_slot 计算需要多少个 slot
+                per_slot = self._contracts_per_slot or 0.2
+                slots_needed = math.ceil(sz / per_slot)
+                slots_to_fill = min(slots_needed, len(self._slots))
+                # 均匀分配持仓到 slot
+                per_slot_sz = sz / slots_to_fill
+                log.warning(
+                    "[grid] 检测到已有%s仓 %.2f张 avgPx=%.2f → "
+                    "分配到 %d 个 slot (每 slot %.2f张)",
+                    pos_dir, sz, avg_px, slots_to_fill, per_slot_sz,
+                )
+                # 注意：_total_held 为正数（持仓量绝对值），方向由 self._side 决定
+                self._total_held = sz
+                self._vwap = avg_px
+                self._vwap_value = sz * avg_px
+                for i in range(slots_to_fill):
+                    self._slots[i].state = _S.HOLDING
+                    self._slots[i].fill_price = avg_px
+                    self._slots[i].fill_sz = per_slot_sz
+                    self._slots[i].fill_ts = time.time()
+                self._grid_active = True
+                self._grid_center = avg_px
+                # 将在第一次 on_tick 中计算 spacing 并挂 TP
         except Exception as e:
             log.warning("[grid] 启动同步持仓失败: %s", e)
 
@@ -570,12 +650,10 @@ class GridProStrategy(TickStrategy):
         return str(self._round_price(price))
 
     def _sz(self, contracts: float) -> str:
-        v = self._round_sz(contracts)
-        if self._lot_sz >= 1.0:
-            return str(int(v))
-        # fractional lot_sz（如0.01）：避免 int() 截断导致返回 "0"
-        n_dec = max(0, -int(math.floor(math.log10(self._lot_sz))))
-        return f"{v:.{n_dec}f}"
+        rounded = self._round_sz(contracts)
+        # Use :g format to avoid int() truncation (e.g. int(0.2)=0)
+        # while still producing clean strings: 0.2→"0.2", 1.0→"1", 0.01→"0.01"
+        return f"{rounded:g}"
 
     # ══════════════════════════════════════════════════════════════════════════
     # 辅助计算
@@ -589,17 +667,23 @@ class GridProStrategy(TickStrategy):
 
     def _calc_unrealized(self, mid: float) -> float:
         total = 0.0
+        sign = self._pnl_sign()
         for s in self._slots:
             if s.state == _S.HOLDING and s.fill_price > 0:
-                pnl_pct = (mid - s.fill_price) / s.fill_price
-                total += pnl_pct * self._notional(s.fill_sz, mid) * self._leverage
+                # long:  (mid-fill)*sign(+1) → mid>fill 盈利
+                # short: (mid-fill)*sign(-1) → mid<fill 盈利
+                total += (mid - s.fill_price) * s.fill_sz * self._ct_val * sign
         return total
 
     def _liq_price(self) -> float:
-        """估算当前净多仓的理论爆仓价。"""
+        """估算当前净仓位的理论爆仓价（long 在下方，short 在上方）。"""
         if self._vwap <= 0 or self._total_held <= 0:
             return 0.0
-        # isolated 逐仓：liq ≈ avgPx × (1 - 1/lever + maint_margin)
+        # isolated 逐仓：
+        #   long:  liq ≈ avgPx × (1 - 1/lever + maint_margin)  （价格跌到此处爆仓）
+        #   short: liq ≈ avgPx × (1 + 1/lever - maint_margin)  （价格涨到此处爆仓）
+        if self._is_short:
+            return self._vwap * (1.0 + 1.0 / self._leverage - self._MAINT_MARGIN_RATE)
         return self._vwap * (1.0 - 1.0 / self._leverage + self._MAINT_MARGIN_RATE)
 
     def _total_margin_used(self, price: float) -> float:
@@ -638,15 +722,29 @@ class GridProStrategy(TickStrategy):
                 return False, f"spread_wide({spread_bps:.1f}bps)"
 
         # 3. 价格速度（接飞刀检测）
-        if self._sens.velocity_pct < self._VELOCITY_ALARM_PCT:
-            return False, f"falling_knife({self._sens.velocity_pct*100:.3f}%/4s)"
-        # 短窗口急跌：最近4个tick下跌超过0.25%，跳过开格（比20tick窗口更敏感）
-        if self._sens.short_velocity_pct < self._SHORT_VELOCITY_ALARM_PCT:
-            return False, f"short_drop({self._sens.short_velocity_pct*100:.3f}%/4tick)"
+        # long:  急跌时不应开多（接下落的刀）→ velocity < -0.0020
+        # short: 急涨时不应开空（追被轧空的空头）→ velocity > +0.0020（镜像）
+        if self._is_short:
+            if self._sens.velocity_pct > -self._VELOCITY_ALARM_PCT:  # +0.0020
+                return False, f"rising_knife({self._sens.velocity_pct*100:.3f}%/20tick)"
+            if self._sens.short_velocity_pct > -self._SHORT_VELOCITY_ALARM_PCT:  # +0.0025
+                return False, f"short_spike({self._sens.short_velocity_pct*100:.3f}%/4tick)"
+        else:
+            if self._sens.velocity_pct < self._VELOCITY_ALARM_PCT:
+                return False, f"falling_knife({self._sens.velocity_pct*100:.3f}%/4s)"
+            # 短窗口急跌：最近4个tick下跌超过0.25%，跳过开格（比20tick窗口更敏感）
+            if self._sens.short_velocity_pct < self._SHORT_VELOCITY_ALARM_PCT:
+                return False, f"short_drop({self._sens.short_velocity_pct*100:.3f}%/4tick)"
 
         # 4. 资金费率
+        # long:  funding > +0.0005 时开新格接近结算会被扣费（不利）
+        # short: funding < -0.0005 时开新格接近结算会被扣费（空头付费给多头）
         time_to_fund = (self._next_funding_ms / 1000.0 - now) if self._next_funding_ms > 0 else 9999.0
-        if self._funding_rate > self._FUNDING_RATE_MAX and time_to_fund < self._FUNDING_PAUSE_WINDOW:
+        if self._is_short:
+            funding_adverse = self._funding_rate < -self._FUNDING_RATE_MAX
+        else:
+            funding_adverse = self._funding_rate > self._FUNDING_RATE_MAX
+        if funding_adverse and time_to_fund < self._FUNDING_PAUSE_WINDOW:
             return False, f"funding_risk(rate={self._funding_rate:.5f} eta={time_to_fund:.0f}s)"
 
         # 5. 波动率状态
@@ -675,7 +773,9 @@ class GridProStrategy(TickStrategy):
         if self._total_held > 0:
             liq = self._liq_price()
             if liq > 0 and mid > 0:
-                dist = (mid - liq) / mid
+                # long:  liq < mid，dist = (mid - liq) / mid
+                # short: liq > mid，dist = (liq - mid) / mid
+                dist = (liq - mid) / mid if self._is_short else (mid - liq) / mid
                 if dist < self._LIQ_WARN_DISTANCE:
                     return False, f"near_liquidation(mid={mid:.2f} liq={liq:.2f} dist={dist:.2%})"
 
@@ -687,17 +787,20 @@ class GridProStrategy(TickStrategy):
 
     def _place_entry(self, slot: GridSlot, now: float) -> bool:
         """
-        下 post_only 限价买单。
+        下 post_only 限价入场单。
+          long  → side="buy"  挂在中心下方
+          short → side="sell" 挂在中心上方
         根据失败原因决定是否重试以及等待时长。
         """
         if now < slot.retry_after_ts:
             return False  # 退避等待中
 
+        api_side = self._entry_api_side()
         try:
             resp = self._rest.request("POST", "/api/v5/trade/order", {
                 "instId": self._inst_id,
                 "tdMode": self._td_mode,
-                "side": "buy",
+                "side": api_side,
                 "ordType": "post_only",
                 "sz": self._sz(slot.contracts),
                 "px": self._px(slot.target_price),
@@ -712,7 +815,10 @@ class GridProStrategy(TickStrategy):
                 slot.entry_ts       = now
                 slot.fail_count     = 0
                 slot.retry_after_ts = 0.0
-                log.info("[grid] L%d 挂单 buy@%s ordId=%s", slot.level, self._px(slot.target_price), oid)
+                log.info(
+                    "[grid] L%d 挂单 %s@%s ordId=%s",
+                    slot.level, api_side, self._px(slot.target_price), oid,
+                )
                 return True
 
             # 下单被拒绝，分类处理
@@ -727,10 +833,20 @@ class GridProStrategy(TickStrategy):
     def _handle_entry_rejection(self, slot: GridSlot, scode: str, now: float) -> None:
         """根据 OKX 错误码决定重试策略。"""
         if scode == _ERR_POST_ONLY:
-            # 价格已穿越盘口：稍等 2s 后用更低价格重试（让出更多空间）
-            slot.target_price = self._round_price(slot.target_price * 0.9999)
+            # 价格已穿越盘口：稍等 2s 后重试（让出更多空间）
+            #   long  → 买单降价（× 0.9999）
+            #   short → 卖单升价（× 1.0001）
+            if self._is_short:
+                slot.target_price = self._round_price(slot.target_price * 1.0001)
+                log_action = "升价"
+            else:
+                slot.target_price = self._round_price(slot.target_price * 0.9999)
+                log_action = "降价"
             slot.retry_after_ts = now + 2.0
-            log.info("[grid] L%d post_only 拒绝，降价后 2s 重试 px=%s", slot.level, self._px(slot.target_price))
+            log.info(
+                "[grid] L%d post_only 拒绝，%s后 2s 重试 px=%s",
+                slot.level, log_action, self._px(slot.target_price),
+            )
 
         elif scode == _ERR_LOT_SIZE:
             # 张数精度问题：修正后立即重试
@@ -790,16 +906,41 @@ class GridProStrategy(TickStrategy):
             return {}
 
     def _place_tp(self, contracts: float, tp_price: float) -> str:
-        """挂 post_only 限价卖单（reduce_only），返回 ordId 或空串。"""
-        # 确保 TP 价格高于 VWAP + 最小盈利空间（避免挂亏损TP）
-        min_tp = self._vwap * (1.0 + self._fee_bps / 10000.0 * 1.5)
-        tp_price = max(tp_price, min_tp)
+        """挂限价 reduce_only 单（做多=sell，做空=buy），返回 ordId 或空串。
+        正常用 post_only（maker 费率更低）。
+        若 tp_price 已被市场越过（long: tp<=bid；short: tp>=ask），post_only 会被拒绝，
+        改用 limit 确保能成交，避免持仓失去 TP 保护。
+        """
+        # 确保 TP 价格相对 VWAP 留出最小盈利空间（避免挂亏损TP）
+        #   long:  tp >= vwap * (1 + fee_margin)
+        #   short: tp <= vwap * (1 - fee_margin)
+        fee_margin = self._fee_bps / 10000.0 * 1.5
+        if self._is_short:
+            max_tp = self._vwap * (1.0 - fee_margin)
+            tp_price = min(tp_price, max_tp)
+        else:
+            min_tp = self._vwap * (1.0 + fee_margin)
+            tp_price = max(tp_price, min_tp)
+
+        api_side = self._exit_api_side()
+        # 选择 ordType：TP 价格已穿越盘口 → limit（会立即成交），否则 post_only
+        #   long  sell: tp <= bid → 立即成交
+        #   short buy:  tp >= ask 或 tp <= bid 都应用 limit；此处用 last_bid 近似
+        ord_type = "post_only"
+        if self._last_bid > 0:
+            crossed = (tp_price >= self._last_bid) if self._is_short else (tp_price <= self._last_bid)
+            if crossed:
+                ord_type = "limit"
+                log.info(
+                    "[grid] TP 价 %.2f 已穿越 bid %.2f（%s），用 limit 确保成交",
+                    tp_price, self._last_bid, api_side,
+                )
         try:
             resp = self._rest.request("POST", "/api/v5/trade/order", {
                 "instId": self._inst_id,
                 "tdMode": self._td_mode,
-                "side": "sell",
-                "ordType": "post_only",
+                "side": api_side,
+                "ordType": ord_type,
                 "sz": self._sz(contracts),
                 "px": self._px(tp_price),
                 "reduceOnly": True,
@@ -808,36 +949,44 @@ class GridProStrategy(TickStrategy):
             oid   = str(row.get("ordId") or "")
             scode = str(row.get("sCode") or "0")
             if oid and scode == "0":
-                log.info("[grid] TP 挂单 sell@%s x%s ordId=%s", self._px(tp_price), self._sz(contracts), oid)
+                log.info("[grid] TP 挂单 %s@%s x%s ordType=%s ordId=%s",
+                         api_side, self._px(tp_price), self._sz(contracts), ord_type, oid)
                 return oid
-            log.warning("[grid] TP 下单失败 sCode=%s", scode)
+            log.warning("[grid] TP 下单失败 sCode=%s ordType=%s", scode, ord_type)
             return ""
         except Exception as e:
             log.warning("[grid] TP 下单异常: %s", e)
             return ""
 
     def _market_close_all(self, mid: float, reason: str) -> None:
-        """市价平仓所有持仓槽位，记录盈亏。"""
+        """市价平仓所有持仓槽位（long=sell，short=buy），记录盈亏。"""
         held = [s for s in self._slots if s.state == _S.HOLDING and s.fill_sz > 0]
         total = sum(s.fill_sz for s in held)
         if total <= 0:
             return
+        api_side = self._exit_api_side()
         try:
             self._rest.request("POST", "/api/v5/trade/order", {
                 "instId": self._inst_id,
                 "tdMode": self._td_mode,
-                "side": "sell",
+                "side": api_side,
                 "ordType": "market",
                 "sz": self._sz(total),
                 "reduceOnly": True,
             })
-            log.warning("[grid] 市价平仓 %s张 @%.2f reason=%s", self._sz(total), mid, reason)
+            log.warning(
+                "[grid] 市价平仓 %s %s张 @%.2f reason=%s",
+                api_side, self._sz(total), mid, reason,
+            )
         except Exception as e:
             log.error("[grid] 市价平仓失败: %s", e)
 
+        sign = self._pnl_sign()
         for s in held:
-            pnl_pct = (mid - s.fill_price) / s.fill_price if s.fill_price > 0 else 0.0
-            net = pnl_pct * self._notional(s.fill_sz, mid) * self._leverage
+            # PnL 方向乘子：long→+1，short→-1（short 的 mid<fill 才盈利）
+            raw_pct = (mid - s.fill_price) / s.fill_price if s.fill_price > 0 else 0.0
+            pnl_pct = raw_pct * sign
+            net = (mid - s.fill_price) * s.fill_sz * self._ct_val * sign
             # 紧急平仓：入场 maker(2bps) + 市价 taker(5bps) = 7bps，比常规 4bps 高
             fee = self._notional(s.fill_sz, mid) * self._EMERGENCY_CLOSE_FEE_BPS / 10000.0
             net_after = net - fee
@@ -904,6 +1053,20 @@ class GridProStrategy(TickStrategy):
     # ══════════════════════════════════════════════════════════════════════════
 
     def _reset_grid(self) -> None:
+        # Cancel any pending entry orders BEFORE clearing state (orphan prevention)
+        for s in self._slots:
+            if s.state == _S.ENTRY_LIVE and s.entry_order_id:
+                if not self._cancel_order(s.entry_order_id):
+                    # Cancel failed — order may already be filled; check and handle
+                    order = self._query_order(s.entry_order_id)
+                    o_state = str(order.get("state", ""))
+                    fill_sz = float(order.get("fillSz") or 0.0)
+                    if o_state == "filled" and fill_sz > 0:
+                        fill_px = float(order.get("avgPx") or order.get("fillPx") or 0)
+                        log.warning(
+                            "[grid] _reset_grid: L%d 入场单已成交 @%.2f sz=%.1f — 需要手动处理或等待reconcile",
+                            s.level, fill_px, fill_sz,
+                        )
         for s in self._slots:
             s.state = _S.EMPTY
             s.entry_order_id = ""
@@ -923,8 +1086,12 @@ class GridProStrategy(TickStrategy):
     def _place_grid(self, center: float, regime: Regime, now: float) -> None:
         """
         以 center 为基准放置网格：
-        - TRENDING_UP：向上偏置，买单更接近当前价（等回调，不追跌）
-        - RANGING：标准向下展开
+        - long 做多：
+            * TRENDING_UP：向上偏置，买单更接近当前价（等回调，不追跌）
+            * RANGING：标准向下展开
+        - short 做空：镜像
+            * TRENDING_DOWN：向下偏置，卖单更接近当前价（等反弹，不追涨）
+            * RANGING：标准向上展开
         """
         n_active = self._vol.active_levels(self._max_levels)
         if n_active == 0:
@@ -932,30 +1099,63 @@ class GridProStrategy(TickStrategy):
             return
 
         spacing = self._vol.spacing_pct(self._atr_mult, self._min_sp, self._max_sp)
-        # 负资金费率（空头溢价）时减少1档，降低多头暴露
-        if self._funding_rate < -0.0003 and n_active > 1:
-            n_active -= 1
-            log.info("[grid] 负资金费率 %.5f，激活档位减1 → %d", self._funding_rate, n_active)
 
-        # FGI 极度恐慌（< 25）时再减1档，恐慌行情下降低多头敞口
-        if self._fear_greed_index < 25 and n_active > 1:
+        # 资金费率逆风检测：
+        #   long:  funding < -0.0003（空头溢价）→ 不利
+        #   short: funding > +0.0003（多头溢价）→ 不利
+        fr_adverse = (
+            self._funding_rate > 0.0003 if self._is_short
+            else self._funding_rate < -0.0003
+        )
+        if fr_adverse and n_active > 1:
             n_active -= 1
-            log.info("[grid] 极度恐慌 FGI=%d，激活档位减1 → %d", self._fear_greed_index, n_active)
+            log.info(
+                "[grid] %s资金费率 %.5f，激活档位减1 → %d",
+                "正" if self._is_short else "负", self._funding_rate, n_active,
+            )
 
-        # TRENDING_UP：买单更靠近当前价（期望浅回调），格宽放大1.3倍让TP更远以捕捉更多上行利润
-        if regime == Regime.TRENDING_UP:
+        # FGI 极端情绪减档（降低逆风方向敞口）：
+        #   long:  FGI < 25（极度恐慌）不利
+        #   short: FGI > 75（极度贪婪）不利
+        fgi_adverse = (
+            self._fear_greed_index > 75 if self._is_short
+            else self._fear_greed_index < 25
+        )
+        if fgi_adverse and n_active > 1:
+            n_active -= 1
+            log.info(
+                "[grid] 极端情绪 FGI=%d（逆%s），激活档位减1 → %d",
+                self._fear_greed_index, "空" if self._is_short else "多", n_active,
+            )
+
+        # US session (UTC 13-23 / CST 21-07): cap levels to 1
+        # Data: 50-fill window 3/3 losses all in US session, 0/9 in Asia session
+        # Reduces max exposure during high-directional-risk hours
+        _utc_h = time.gmtime().tm_hour
+        if 13 <= _utc_h <= 23 and n_active > 1:
+            n_active = 1
+            log.info("[grid] US session (UTC %02d), levels capped→1", _utc_h)
+
+        # 顺势偏置：
+        #   long  → TRENDING_UP   时 bias=0.5（更靠近当前价）+ spacing*1.3（TP更远）
+        #   short → TRENDING_DOWN 时 bias=0.5 + spacing*1.3
+        favorable_trend = (
+            Regime.TRENDING_DOWN if self._is_short else Regime.TRENDING_UP
+        )
+        if regime == favorable_trend:
             bias = 0.5
             spacing = min(spacing * 1.3, self._max_sp)
-            # 贪婪市场（FGI>60）+ 上升趋势：顺势多激活1档（行情好多赚）
-            # 但负资金费率（< -0.0003）时不加档：负费率已触发减1档惩罚，加档会抵消保护效果
-            if (
-                self._fear_greed_index > 60
-                and n_active < self._max_levels
-                and self._funding_rate >= -0.0003
-            ):
+            # 顺势+极端情绪顺风时多激活1档（行情好多赚）：
+            #   long:  FGI>60 + TRENDING_UP   → 顺势贪婪
+            #   short: FGI<40 + TRENDING_DOWN → 顺势恐慌
+            fgi_favorable = (
+                self._fear_greed_index < 40 if self._is_short
+                else self._fear_greed_index > 60
+            )
+            if fgi_favorable and n_active < self._max_levels:
                 n_active += 1
                 log.info(
-                    "[grid] 贪婪 FGI=%d + TRENDING_UP，激活档位加1 → %d",
+                    "[grid] 顺势+情绪FGI=%d，激活档位加1 → %d",
                     self._fear_greed_index, n_active,
                 )
         else:
@@ -967,35 +1167,37 @@ class GridProStrategy(TickStrategy):
         self._grid_active   = True
         placed = 0
 
+        # 入场方向乘子：long 在下方(-1)，short 在上方(+1)
+        dir_sign = self._grid_spacing_sign()
         for i, s in enumerate(self._slots):
             if i >= n_active:
                 break
             if s.state != _S.EMPTY:
                 continue
-            s.target_price    = center * (1.0 - spacing * (i + 1) * bias)
+            s.target_price    = center * (1.0 + dir_sign * spacing * (i + 1) * bias)
             s.last_attempt_ts = now
             if self._place_entry(s, now):
                 placed += 1
 
         log.info(
-            "[grid] 网格启动 regime=%s center=%.2f spacing=%.4f%% "
+            "[grid] 网格启动 direction=%s regime=%s center=%.2f spacing=%.4f%% "
             "levels=%d/%d placed=%d vol=%s",
-            regime.value, center, spacing * 100,
+            self._direction, regime.value, center, spacing * 100,
             placed, n_active, placed, self._vol.vol_regime,
         )
 
     def _update_tp(self) -> None:
         """取消旧 TP，以当前 VWAP + 格宽重新挂单。
-        RANGING 模式用 0.8×spacing（快速小利润，避免横盘回撤吃掉浮盈）；
-        其他模式（TRENDING_UP 等）保持 1.0×spacing。
+        long:  TP 在 VWAP 上方（+spacing*mult）
+        short: TP 在 VWAP 下方（-spacing*mult）
         """
         if self._total_held <= 0:
             return
         if self._tp_order_id:
             self._cancel_order(self._tp_order_id)
             self._tp_order_id = ""
-        tp_mult = 0.8 if self._regime.current == Regime.RANGING else 1.0
-        tp = self._vwap * (1.0 + self._grid_spacing * tp_mult)
+        tp_sign = self._tp_spacing_sign()
+        tp = self._vwap * (1.0 + tp_sign * self._grid_spacing * self._tp_mult)
         self._tp_price = tp
         oid = self._place_tp(self._total_held, tp)
         if oid:
@@ -1004,12 +1206,11 @@ class GridProStrategy(TickStrategy):
 
     def _maybe_trail_tp(self, mid: float) -> None:
         """
-        TP 追踪：若市场已大幅超过 TP 价格（说明价格继续涨），
-        上调 TP 以锁住更多利润。
-        RANGING 模式：触发阈值收窄至 0.3格宽，步长收窄至 0.15格宽（价格快速反转，需更早锁定）。
-        其他模式：触发阈值 0.4格宽，步长 0.25格宽（给趋势更多空间）。
+        TP 追踪：
+          long  → 市场上行 mid > tp + 0.4*spacing，TP 上移到 mid - 0.25*spacing
+          short → 市场下行 mid < tp - 0.4*spacing，TP 下移到 mid + 0.25*spacing
         节流：两次追踪间隔不小于 _TP_TRAIL_MIN_INTERVAL（30s），避免频繁 API 调用。
-        成功追踪后重置 _tp_placed_ts，给TP新的超时窗口（市场上行时不应过早止损）。
+        成功追踪后重置 _tp_placed_ts，给TP新的超时窗口（顺势行情中不应过早止损）。
         """
         if not self._tp_order_id or self._tp_price <= 0:
             return
@@ -1017,32 +1218,66 @@ class GridProStrategy(TickStrategy):
         if now - self._last_tp_trail_ts < self._TP_TRAIL_MIN_INTERVAL:
             return  # 节流：避免每个 tick 都 cancel/replace TP 单
         spacing_abs = self._grid_spacing * self._vwap
-        # RANGING 均值回归：更早追踪（0.3格）+ 更近落点（0.15格），确保在价格反转前锁定利润
-        is_ranging = self._regime.current == Regime.RANGING
-        trail_trigger_mult = 0.3 if is_ranging else 0.4
-        trail_step_mult    = 0.15 if is_ranging else 0.25
-        if mid > self._tp_price + spacing_abs * trail_trigger_mult:
-            new_tp = mid - spacing_abs * trail_step_mult
-            log.info(
-                "[grid] TP 追踪上调(%s)：mid=%.2f > tp=%.2f + %.2f格，新TP=%.2f",
-                "ranging" if is_ranging else "default",
-                mid, self._tp_price, trail_trigger_mult, new_tp,
-            )
-            if new_tp > self._tp_price:
-                self._cancel_order(self._tp_order_id)
-                self._tp_order_id = ""
-                self._tp_price = new_tp
-                oid = self._place_tp(self._total_held, new_tp)
-                if oid:
-                    self._tp_order_id = oid
-                    self._tp_placed_ts = now   # 重置超时计时器：市场上行时不应过早触发止损
-                self._last_tp_trail_ts = now   # 无论成功与否都更新节流时间戳
+
+        if self._is_short:
+            # short：市场继续下跌时向下追踪 TP，锁住更多空头利润
+            if mid < self._tp_price - spacing_abs * 0.4:
+                new_tp = mid + spacing_abs * 0.25
+                log.info(
+                    "[grid] TP 追踪下调（short）：mid=%.2f < tp=%.2f - 0.4格，新TP=%.2f",
+                    mid, self._tp_price, new_tp,
+                )
+                if new_tp < self._tp_price:
+                    self._cancel_order(self._tp_order_id)
+                    self._tp_order_id = ""
+                    self._tp_price = new_tp
+                    oid = self._place_tp(self._total_held, new_tp)
+                    if oid:
+                        self._tp_order_id = oid
+                        self._tp_placed_ts = now
+                    self._last_tp_trail_ts = now
+        else:
+            # long：市场继续上涨时向上追踪 TP
+            if mid > self._tp_price + spacing_abs * 0.4:
+                new_tp = mid - spacing_abs * 0.25
+                log.info(
+                    "[grid] TP 追踪上调：mid=%.2f > tp=%.2f + 0.4格，新TP=%.2f",
+                    mid, self._tp_price, new_tp,
+                )
+                if new_tp > self._tp_price:
+                    self._cancel_order(self._tp_order_id)
+                    self._tp_order_id = ""
+                    self._tp_price = new_tp
+                    oid = self._place_tp(self._total_held, new_tp)
+                    if oid:
+                        self._tp_order_id = oid
+                        self._tp_placed_ts = now   # 重置超时计时器：市场上行时不应过早触发止损
+                    self._last_tp_trail_ts = now   # 无论成功与否都更新节流时间戳
 
     def _reset_grid_state(self, reason: str, now: float, cooldown: float = 10.0) -> None:
         """统一网格重置入口：撤销所有入场挂单，清空网格状态，设冷静期。"""
         for s in self._slots:
             if s.state == _S.ENTRY_LIVE and s.entry_order_id:
-                self._cancel_order(s.entry_order_id)
+                if not self._cancel_order(s.entry_order_id):
+                    # Cancel failed — check if already filled to avoid orphan
+                    order = self._query_order(s.entry_order_id)
+                    o_state = str(order.get("state", ""))
+                    fill_sz = float(order.get("fillSz") or 0.0)
+                    if o_state == "filled" and fill_sz > 0:
+                        fill_px = float(order.get("avgPx") or order.get("fillPx") or s.target_price)
+                        log.warning(
+                            "[grid] _reset_grid_state: L%d 入场单已成交 @%.2f sz=%.1f — 标记HOLDING",
+                            s.level, fill_px, fill_sz,
+                        )
+                        s.fill_price = fill_px
+                        s.fill_sz = fill_sz
+                        s.fill_ts = now
+                        s.state = _S.HOLDING
+                        s.entry_order_id = ""
+                        self._vwap_value += fill_px * fill_sz
+                        self._total_held += fill_sz
+                        self._vwap = self._vwap_value / self._total_held if self._total_held > 0 else 0.0
+                        continue
                 s.state = _S.EMPTY
                 s.entry_order_id = ""
         self._grid_active = False
@@ -1055,7 +1290,9 @@ class GridProStrategy(TickStrategy):
         """
         价格偏离检测：两种触发条件：
         1. 距离触发：偏离 > recenter_mult × spacing（缩短至 1.5 倍）
-        2. 穿叉触发：任意 EMPTY 槽位的计算目标价 >= 当前 bid（说明中心已失效）
+        2. 穿叉触发：任意 EMPTY 槽位的计算目标价穿越盘口
+           long  → 买单目标价 >= bid 时失效
+           short → 卖单目标价 <= bid 时失效（近似；严格应与 ask 比较）
         """
         if not self._grid_center or not self._grid_spacing:
             return
@@ -1071,14 +1308,20 @@ class GridProStrategy(TickStrategy):
             )
             return
 
-        # ── 条件2：买单价格穿越盘口（买单 >= bid → post_only 必败）──────────
+        # ── 条件2：入场单价格穿越盘口（post_only 会必败）──────────
         if self._last_bid > 0:
+            dir_sign = self._grid_spacing_sign()
             for s in self._slots:
                 if s.state == _S.EMPTY:
-                    calc_px = self._grid_center * (1.0 - self._grid_spacing * (s.level + 1))
-                    if calc_px >= self._last_bid:
+                    calc_px = self._grid_center * (1.0 + dir_sign * self._grid_spacing * (s.level + 1))
+                    crossed = (
+                        calc_px <= self._last_bid if self._is_short
+                        else calc_px >= self._last_bid
+                    )
+                    if crossed:
+                        op = "<=" if self._is_short else ">="
                         self._reset_grid_state(
-                            f"L{s.level}目标价 {calc_px:.2f} >= bid {self._last_bid:.2f}",
+                            f"L{s.level}目标价 {calc_px:.2f} {op} bid {self._last_bid:.2f}",
                             now, cooldown=5.0,
                         )
                         return
@@ -1174,10 +1417,13 @@ class GridProStrategy(TickStrategy):
         if state == "filled":
             actual_fill = fill_sz if fill_sz > 0 else self._total_held
             total_net = 0.0
+            sign = self._pnl_sign()
             for s in self._slots:
                 if s.state == _S.HOLDING and s.fill_sz > 0:
-                    pnl_pct = (fill_px - s.fill_price) / s.fill_price
-                    net = pnl_pct * self._notional(s.fill_sz, fill_px) * self._leverage
+                    # PnL 方向乘子：long→+1，short→-1（short 的 fill_px<fill_price 才盈利）
+                    raw_pct = (fill_px - s.fill_price) / s.fill_price
+                    pnl_pct = raw_pct * sign
+                    net = (fill_px - s.fill_price) * s.fill_sz * self._ct_val * sign
                     fee = self._roundtrip_fee(s.fill_sz, fill_px)
                     net_after = net - fee
                     total_net += net_after
@@ -1266,8 +1512,10 @@ class GridProStrategy(TickStrategy):
     def _position_sync_check(self, runtime: dict[str, Any], now: float) -> None:
         """
         每 10s 从 runtime 中获取实际持仓，与内部记录对比并自动修复：
-        - 交易所 > 内部 + 0.5张：补录差额，用 UPL 反推估算成本，重挂 TP
-        - 交易所 < 内部 - 0.5张（幽灵仓）：以交易所为准，清除多余内部状态
+        - 交易所 > 内部 + threshold：补录差额，用 UPL 反推估算成本，重挂 TP
+        - 交易所 < 内部 - threshold（幽灵仓）：以交易所为准，清除多余内部状态
+        threshold = contracts_per_slot * 0.5（自适应，确保能检测单 slot 偏差）
+        direction=short 时以 short_sz/short_upl 为准。
         """
         if now - self._last_pos_sync < self._POSITION_SYNC_INTERVAL:
             return
@@ -1276,21 +1524,32 @@ class GridProStrategy(TickStrategy):
         pos_summary = runtime.get("swap_position_summary") or strat_rt.get("swap_position_summary")
         if pos_summary is None:
             return
-        exchange_long = float(pos_summary.get("long_sz") or 0.0)
+        # 根据方向读取对应的仓位字段
+        if self._is_short:
+            exchange_sz = float(pos_summary.get("short_sz") or 0.0)
+            upl_raw = float(pos_summary.get("short_upl") or 0.0)
+        else:
+            exchange_sz = float(pos_summary.get("long_sz") or 0.0)
+            upl_raw = float(pos_summary.get("long_upl") or 0.0)
         internal_held = self._total_held
-        diff = exchange_long - internal_held
-        # 同步阈值：半个槽位大小（适配 contracts_per_slot=0.2 等小规模配置），
-        # 避免硬编码 0.5 在小账户下漏检 1-2 槽位的真实持仓差异
-        _thresh = max(self._contracts_per_slot * 0.5, 0.05)
+        diff = exchange_sz - internal_held
+        # 阈值随 contracts_per_slot 自适应：0.2 slot → 0.1 阈值（能检测单 slot 偏差）
+        _sync_threshold = max(self._contracts_per_slot * 0.5, 0.05)
 
-        if diff > _thresh:
+        if diff > _sync_threshold:
             # 交易所有仓但内部无记录 → 用 UPL 反推估算成本价，补录内部状态
-            long_upl = float(pos_summary.get("long_upl") or 0.0)
             mid = self._last_bid if self._last_bid > 0 else self._vwap
-            if mid > 0 and exchange_long > 0:
-                # UPL ≈ (mid - avg_entry) × sz × ct_val × leverage
-                notional_factor = exchange_long * self._ct_val * self._leverage
-                est_entry = mid - long_upl / notional_factor if notional_factor > 0 else mid
+            if mid > 0 and exchange_sz > 0:
+                # long:  UPL = (mid - avg_entry) × sz × ct_val  →  avg = mid - UPL/(sz*ct)
+                # short: UPL = (avg_entry - mid) × sz × ct_val  →  avg = mid + UPL/(sz*ct)
+                notional_factor = exchange_sz * self._ct_val
+                if notional_factor > 0:
+                    if self._is_short:
+                        est_entry = mid + upl_raw / notional_factor
+                    else:
+                        est_entry = mid - upl_raw / notional_factor
+                else:
+                    est_entry = mid
                 # 合理性校验：成本价偏离当前价 >5% 则降级为用当前价
                 if est_entry <= 0 or abs(est_entry - mid) / mid > 0.05:
                     est_entry = mid
@@ -1298,46 +1557,75 @@ class GridProStrategy(TickStrategy):
                 est_entry = mid if mid > 0 else 0.0
 
             log.warning(
-                "[grid] 持仓不一致！交易所=%.3f 内部=%.3f 差额=%.3f est_entry=%.2f，自动补录",
-                exchange_long, internal_held, diff, est_entry,
+                "[grid] 持仓不一致！交易所=%.1f 内部=%.1f 差额=%.1f est_entry=%.2f，自动补录",
+                exchange_sz, internal_held, diff, est_entry,
             )
             if est_entry > 0:
                 self._vwap_value += est_entry * diff
-                self._total_held = exchange_long
+                self._total_held = exchange_sz
                 self._vwap = self._vwap_value / self._total_held
                 if self._grid_spacing <= 0:
                     self._grid_spacing = self._vol.spacing_pct(
                         self._atr_mult, self._min_sp, self._max_sp
                     ) or self._min_sp
+
+                # ── 关键修复：将未追踪的合约分配到 HOLDING slots ──
+                held_in_slots = sum(
+                    s.fill_sz for s in self._slots if s.state == _S.HOLDING
+                )
+                untracked = exchange_sz - held_in_slots
+                if untracked > _sync_threshold:
+                    per_slot = self._contracts_per_slot or 0.2
+                    for s in self._slots:
+                        if untracked <= _sync_threshold:
+                            break
+                        if s.state == _S.HOLDING:
+                            continue
+                        # 先撤掉 ENTRY_LIVE 挂单
+                        if s.state == _S.ENTRY_LIVE and s.entry_order_id:
+                            self._cancel_order(s.entry_order_id)
+                            s.entry_order_id = ""
+                        assign = min(per_slot, untracked)
+                        s.state = _S.HOLDING
+                        s.fill_price = est_entry
+                        s.fill_sz = assign
+                        s.fill_ts = now
+                        untracked -= assign
+                    log.info(
+                        "[grid] slot 补录完成：%d 个 HOLDING slot",
+                        sum(1 for s in self._slots if s.state == _S.HOLDING),
+                    )
+
                 self._update_tp()
                 log.info(
-                    "[grid] 持仓修复完成：total_held=%.3f vwap=%.2f TP已补挂",
+                    "[grid] 持仓修复完成：total_held=%.1f vwap=%.2f TP已补挂",
                     self._total_held, self._vwap,
                 )
 
-        elif diff < -_thresh:
+        elif diff < -_sync_threshold:
             # 内部认为有仓但交易所实际为0 → 幽灵持仓，清除防止错误操作
             log.warning(
-                "[grid] 幽灵持仓！交易所=%.3f < 内部=%.3f，清除内部状态",
-                exchange_long, internal_held,
+                "[grid] 幽灵持仓！交易所=%.1f < 内部=%.1f diff=%.2f threshold=%.2f，清除内部状态",
+                exchange_sz, internal_held, diff, _sync_threshold,
             )
-            if exchange_long < _thresh:
-                # 交易所基本无仓：全部清除
+            if exchange_sz < _sync_threshold:
+                # 交易所完全无仓：全部清除
                 self._reset_grid()
             else:
                 # 交易所有部分仓位：以交易所为准等比缩减
-                self._total_held = exchange_long
-                self._vwap_value = self._vwap * exchange_long
+                ratio = exchange_sz / internal_held
+                self._total_held = exchange_sz
+                self._vwap_value = self._vwap * exchange_sz
                 held = [s for s in self._slots if s.state == _S.HOLDING]
                 kept = 0.0
                 for s in held:
-                    if kept + s.fill_sz <= exchange_long + _thresh:
+                    if kept + s.fill_sz <= exchange_sz + _sync_threshold:
                         kept += s.fill_sz
                     else:
                         s.state = _S.EMPTY
                         s.fill_sz = 0.0
                         s.fill_price = 0.0
-                log.info("[grid] 幽灵仓缩减完成：total_held=%.3f", self._total_held)
+                log.info("[grid] 幽灵仓缩减完成：total_held=%.1f", self._total_held)
 
     # ══════════════════════════════════════════════════════════════════════════
     # 定期状态日志
@@ -1423,6 +1711,11 @@ class GridProStrategy(TickStrategy):
         self._ema_macro.update(mid)
         self._vol.update(mid)
         self._sens.update(mid, now)
+        # L3-001: 更新盘口不平衡 EMA
+        _strt = runtime.get("strategy_runtime") or {}
+        _raw_imb = _strt.get("book_imbalance")
+        if isinstance(_raw_imb, (int, float)):
+            self._ema_book_imb.update(float(_raw_imb))
         self._warmup_ticks += 1
 
         if self._warmup_ticks < self._warmup_need:
@@ -1476,9 +1769,12 @@ class GridProStrategy(TickStrategy):
 
         # ── 2. 趋势过滤：危险 Regime 处理 ───────────────────────────────────
         # 策略：挂单立即撤销（无损）；持仓给 45s 宽限期让 TP 自然成交或价格恢复。
-        # 45s 覆盖了 Regime 最小保持时间（20s），避免短暂下跌触发不必要割肉。
+        # 45s 覆盖了 Regime 最小保持时间（20s），避免短暂波动触发不必要割肉。
         # 浮亏超过 1U 则不等待，立即止损。
-        if regime in (Regime.TRENDING_DOWN, Regime.VOLATILE):
+        #   long  → 危险 Regime = TRENDING_DOWN + VOLATILE
+        #   short → 危险 Regime = TRENDING_UP   + VOLATILE（涨势对空头不利）
+        _danger_trend = Regime.TRENDING_UP if self._is_short else Regime.TRENDING_DOWN
+        if regime in (_danger_trend, Regime.VOLATILE):
             # 立即撤销所有入场挂单（无损操作）
             for s in self._slots:
                 if s.state == _S.ENTRY_LIVE and s.entry_order_id:
@@ -1487,14 +1783,16 @@ class GridProStrategy(TickStrategy):
                     s.entry_order_id = ""
             self._grid_active = False
 
-            # 持仓宽限期：60s 或浮亏 > 1U 才触发平仓（60s 覆盖 Regime 最小保持20s，减少误割）
+            # 持仓宽限期：60s 或浮亏 > 1.5U 才触发平仓（60s 覆盖 Regime 最小保持20s，减少误割）
+            # 阈值 -1.5U 与 per_slot_stop 对齐；旧值 -1.0U 在 2-slot 网格中仅 21bps(5U) 跌幅即触发，
+            # 绕过宽限期导致 calm 行情频繁误割 → 触发 3-stop/1h 扩展冷静期
             has_holding = any(s.state == _S.HOLDING for s in self._slots)
             if has_holding:
                 if self._bearish_regime_since == 0.0:
                     self._bearish_regime_since = now
                     log.info("[grid] Regime=%s 宽限期开始，持仓等待TP或价格恢复", regime.value)
                 elapsed = now - self._bearish_regime_since
-                if elapsed > 60.0 or unrealized < -1.0:
+                if elapsed > 60.0 or unrealized < -1.5:
                     log.warning(
                         "[grid] Regime=%s 宽限到期 elapsed=%.0fs unreal=%.3fU，平仓",
                         regime.value, elapsed, unrealized,
@@ -1517,16 +1815,28 @@ class GridProStrategy(TickStrategy):
             return None
 
         # ── 4. 杠杆安全检查 ────────────────────────────────────────────────
+        # 用 total equity（非 available）评估保证金占比，避免双重扣减导致虚高
         _strat_rt = runtime.get("strategy_runtime") or {}
         equity = float(
-            runtime.get("usdt_avail_swap") or _strat_rt.get("usdt_avail_swap") or 0.0
+            runtime.get("equity_usdt")
+            or _strat_rt.get("equity_usdt")
+            or runtime.get("usdt_avail_swap")
+            or _strat_rt.get("usdt_avail_swap")
+            or 0.0
         ) or None
         safe, safety_reason = self._check_leverage_safety(mid, equity)
+        _margin_overuse = False
         if not safe:
-            log.warning("[grid] 杠杆安全警报: %s", safety_reason)
             if "near_liquidation" in safety_reason:
+                log.warning("[grid] 杠杆安全警报: %s", safety_reason)
                 self._emergency_close(safety_reason, mid)
-            return None
+                return None
+            # margin_overuse / equity_too_low：仅阻止新开格，不阻止持仓管理
+            # （TP sync、止损、TP trail 必须继续运行，否则持仓裸露无保护）
+            _margin_overuse = True
+            if now - getattr(self, "_last_margin_warn_ts", 0.0) >= 60.0:
+                log.warning("[grid] 杠杆安全警报(仅阻止新开格): %s", safety_reason)
+                self._last_margin_warn_ts = now
 
         # ── 5. 同步订单状态（节流） ─────────────────────────────────────────
         if now - self._last_sync_ts >= self._sync_iv:
@@ -1535,17 +1845,17 @@ class GridProStrategy(TickStrategy):
 
         # ── 6a. 单仓硬止损（每个 HOLDING 槽位独立评估） ───────────────────
         # 单槽浮亏公式与 _calc_unrealized 一致：
-        #   pnl_pct = (mid - fill_price) / fill_price
-        #   slot_upl = pnl_pct * notional(fill_sz, mid) * leverage
+        #   long:  slot_upl = (mid - fill_price) * fill_sz * ct_val
+        #   short: slot_upl = -(mid - fill_price) * fill_sz * ct_val
         # 任一槽位超过 per_slot_stop 立即触发紧急平仓（整仓）
         # 原因：小账户下，即使只有一个槽位失控，也会迅速穿透整体止损阈值；
         # 所以"快一步"在单仓层先行截断
         if self._per_slot_stop > 0:
+            pnl_sign = self._pnl_sign()
             for s in self._slots:
                 if s.state != _S.HOLDING or s.fill_sz <= 0 or s.fill_price <= 0:
                     continue
-                pnl_pct = (mid - s.fill_price) / s.fill_price
-                slot_upl = pnl_pct * self._notional(s.fill_sz, mid) * self._leverage
+                slot_upl = (mid - s.fill_price) * s.fill_sz * self._ct_val * pnl_sign
                 if slot_upl <= -self._per_slot_stop:
                     log.warning(
                         "[grid] 单仓硬止损: L%d 浮亏=%.4f USDT (fill=%.2f, mid=%.2f, sz=%.3f)",
@@ -1555,22 +1865,27 @@ class GridProStrategy(TickStrategy):
                     return None
 
         # ── 6. 整体浮亏止损 ─────────────────────────────────────────────────
-        # 动态止损：账户余额 * 10%，最低 4U 兜底；账户增长时止损同步放宽，缩水时收紧
         unrealized = self._calc_unrealized(mid)
-        _eff_whole_stop = max(4.0, (equity or 0.0) * 0.10) if equity else self._whole_stop
-        if unrealized <= -_eff_whole_stop:
-            log.warning("[grid] 整体止损: 浮亏=%.4f USDT (有效阈值=%.2fU, 余额=%.2fU)",
-                        unrealized, _eff_whole_stop, equity or 0.0)
+        if unrealized <= -self._whole_stop:
+            log.warning("[grid] 整体止损: 浮亏=%.4f USDT", unrealized)
             self._emergency_close("whole_grid_stop", mid)
             return None
 
-        # ── 7. TP 追踪（市场大涨时上移 TP） ─────────────────────────────────
+        # ── 7. TP 追踪（顺势行情时移动 TP） ─────────────────────────────────
         if self._total_held > 0:
             self._maybe_trail_tp(mid)
-            # ── 7b. TP 超时止损：持仓超过N分钟且（价格跌破VWAP-1格宽 OR 浮亏>0.5U）
-            # TRENDING_UP 时延长至10分钟：上升趋势中 TP 需更多时间触发，不应过早止损
-            _TP_AGING_SEC = 600.0 if regime == Regime.TRENDING_UP else 480.0
-            _tp_price_breach = self._vwap > 0 and mid < self._vwap * (1.0 - self._grid_spacing)
+            # ── 7b. TP 超时止损：持仓超过N分钟且（价格逆势突破VWAP±1格宽 OR 浮亏>0.5U）
+            # 顺势 Regime 时延长至10分钟：顺势趋势中 TP 需更多时间触发，不应过早止损
+            #   long  → 顺势=TRENDING_UP；价格破位条件 mid < vwap*(1 - spacing)
+            #   short → 顺势=TRENDING_DOWN；价格破位条件 mid > vwap*(1 + spacing)
+            favorable_trend = (
+                Regime.TRENDING_DOWN if self._is_short else Regime.TRENDING_UP
+            )
+            _TP_AGING_SEC = 600.0 if regime == favorable_trend else 480.0
+            if self._is_short:
+                _tp_price_breach = self._vwap > 0 and mid > self._vwap * (1.0 + self._grid_spacing)
+            else:
+                _tp_price_breach = self._vwap > 0 and mid < self._vwap * (1.0 - self._grid_spacing)
             _tp_loss_breach = unrealized < -0.5  # 浮亏超0.5U触发止损
             if (
                 self._tp_placed_ts > 0
@@ -1578,11 +1893,15 @@ class GridProStrategy(TickStrategy):
                 and (_tp_price_breach or _tp_loss_breach)
             ):
                 log.warning(
-                    "[grid] TP 超时止损: 持仓%.0fs mid=%.2f < vwap=%.2f-格宽",
-                    now - self._tp_placed_ts, mid, self._vwap,
+                    "[grid] TP 超时止损: 持仓%.0fs mid=%.2f vwap=%.2f 方向=%s",
+                    now - self._tp_placed_ts, mid, self._vwap, self._direction,
                 )
                 self._emergency_close("tp_timeout_stoploss", mid)
                 return None
+
+        # ── 7c. margin_overuse → 管完持仓后不开新格 ─────────────────────────
+        if _margin_overuse:
+            return None
 
         # ── 8. 利润保护模式 ─────────────────────────────────────────────────
         if self._pnl.profit_protect_mode():
@@ -1599,23 +1918,49 @@ class GridProStrategy(TickStrategy):
         market_ok, market_reason = self._market_ok_to_enter(runtime, mid, now, bid=bid, ask=ask)
 
         # ── 10b. 宏观趋势过滤（macro_bias = mid偏离5分钟EMA）───────────────
-        # macro_bias < -0.002 = 价格跌破5分钟均线0.2%，与 regime.py _MACRO_DOWN_KILL 对齐
-        # 原阈值 -0.0015 比 regime 更保守，导致 Regime=RANGING 时格仍不开（矛盾）
+        # long:  macro_bias < -0.002（跌破5min均线0.2%）→ 开多不利
+        # short: macro_bias > +0.002（涨破5min均线0.2%）→ 开空不利
         macro_bias = feat["macro_bias"]
-        macro_bearish = macro_bias < -0.0020
-        if macro_bearish and not self._grid_active:
+        if self._is_short:
+            macro_adverse = macro_bias > 0.0020
+        else:
+            macro_adverse = macro_bias < -0.0020
+        if macro_adverse and not self._grid_active:
             if market_ok:  # 仅在原本可开格时才记日志（避免刷屏）
-                log.info("[grid] 宏观偏空 macro_bias=%.4f，跳过开格", macro_bias)
+                log.info(
+                    "[grid] 宏观逆%s macro_bias=%.4f，跳过开格",
+                    "空" if self._is_short else "多", macro_bias,
+                )
+            return None
+
+        # ── 10c. 盘口不平衡过滤（L3-001）──────────────────────────────────
+        # long:  EMA(book_imbalance) < -0.4（卖方主导）→ 开多不利
+        # short: EMA(book_imbalance) > +0.4（买方主导）→ 开空不利
+        _book_imb_ema = self._ema_book_imb.value
+        if self._is_short:
+            book_adverse = _book_imb_ema is not None and _book_imb_ema > 0.40
+        else:
+            book_adverse = _book_imb_ema is not None and _book_imb_ema < -0.40
+        if book_adverse and not self._grid_active:
+            if market_ok and not macro_adverse:
+                log.info(
+                    "[grid] 盘口逆%s book_imb_ema=%.3f，跳过开格",
+                    "空" if self._is_short else "多", _book_imb_ema,
+                )
             return None
 
         # ── 11. 激活网格 ───────────────────────────────────────────────────
-        if not self._grid_active and market_ok and regime in (Regime.RANGING, Regime.TRENDING_UP):
+        # long:  允许 RANGING + TRENDING_UP
+        # short: 允许 RANGING + TRENDING_DOWN
+        _allowed_trend = Regime.TRENDING_DOWN if self._is_short else Regime.TRENDING_UP
+        if not self._grid_active and market_ok and regime in (Regime.RANGING, _allowed_trend):
             self._profit_protect_logged = False
             self._place_grid(mid, regime, now)
             return None
 
         # ── 12. 补充空置槽位 ───────────────────────────────────────────────
         if self._grid_active and market_ok:
+            dir_sign = self._grid_spacing_sign()
             for s in self._slots:
                 if (
                     s.state == _S.EMPTY
@@ -1625,15 +1970,23 @@ class GridProStrategy(TickStrategy):
                     and self._grid_center > 0
                 ):
                     calc_px = self._grid_center * (
-                        1.0 - self._grid_spacing * (s.level + 1)
+                        1.0 + dir_sign * self._grid_spacing * (s.level + 1)
                     )
-                    # 计算目标价越叉：买单 >= bid → 中心已过期，触发网格重置
-                    if self._last_bid > 0 and calc_px >= self._last_bid:
-                        self._reset_grid_state(
-                            f"补仓L{s.level}目标价{calc_px:.2f}>=bid{self._last_bid:.2f}",
-                            now, cooldown=5.0,
+                    # 计算目标价越叉：
+                    #   long  买单 >= bid 即穿越 → post_only 必败，重置
+                    #   short 卖单 <= bid 即穿越（近似）→ 重置
+                    if self._last_bid > 0:
+                        crossed = (
+                            calc_px <= self._last_bid if self._is_short
+                            else calc_px >= self._last_bid
                         )
-                        break
+                        if crossed:
+                            op = "<=" if self._is_short else ">="
+                            self._reset_grid_state(
+                                f"补仓L{s.level}目标价{calc_px:.2f}{op}bid{self._last_bid:.2f}",
+                                now, cooldown=5.0,
+                            )
+                            break
                     s.target_price = calc_px
                     s.last_attempt_ts = now
                     self._place_entry(s, now)
@@ -1662,9 +2015,11 @@ class GridProStrategy(TickStrategy):
             "total_held":    self._total_held,
             "vwap":          round(self._vwap, 2),
             "tp_price":      round(self._tp_price, 2),
+            "tp_mult":       self._tp_mult,
             "liq_price":     round(self._liq_price(), 2),
             "daily_pnl":     round(self._pnl.realized, 4),
             "profit_protect": self._pnl.profit_protect_mode(),
             "funding_rate":  self._funding_rate,
+            "book_imb_ema":  round(self._ema_book_imb.value or 0.0, 3),
             "session":       self._tracker.session_summary(),
         }

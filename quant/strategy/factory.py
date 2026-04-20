@@ -26,6 +26,9 @@ from quant.settings import (
     GRID_DRAWDOWN_FROM_PEAK_USDT,
     GRID_CONTRACTS_PER_SLOT,
     GRID_PER_SLOT_STOP_USDT,
+    GRID_DIRECTION,
+    GRID_CONTRACTS_PER_SLOT_SHORT,
+    GRID_TP_MULT,
 )
 from quant.strategy.base import TickStrategy
 from quant.strategy.grid_pro import GridProStrategy
@@ -59,4 +62,7 @@ def build_strategy() -> TickStrategy:
         drawdown_from_peak_usdt=GRID_DRAWDOWN_FROM_PEAK_USDT,
         contracts_per_slot=GRID_CONTRACTS_PER_SLOT,
         per_slot_stop_usdt=GRID_PER_SLOT_STOP_USDT,
+        grid_direction=GRID_DIRECTION,
+        contracts_per_slot_short=GRID_CONTRACTS_PER_SLOT_SHORT,
+        tp_mult=GRID_TP_MULT,
     )
