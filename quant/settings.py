@@ -471,9 +471,9 @@ class D:
     GRID_WARMUP_TICKS = 30             # 热身期（原60缩为30，更快开始交易）
     GRID_DAILY_TARGET_USDT = 999.0     # 无每日上限——全天持续交易不停止（原1.5U上限是致命缺陷）
     GRID_DRAWDOWN_FROM_PEAK_USDT = 2.0 # 峰值回撤上限（适配 42U 小账户，~5%）
-    # 单格张数（ETH-USDT-SWAP ctVal=0.1ETH，1张=0.1ETH）。
-    # 默认 0.2 张 = 0.02 ETH ≈ 46U 名义；5× 杠杆下每仓保证金 ~9.3U，适配 42U 账户
-    GRID_CONTRACTS_PER_SLOT = 0.2
+    # 单格张数（ETH-USDT-SWAP ctVal=0.1ETH，lotSz=1，1张=0.1ETH）。
+    # 原设 0.2 但 lot_sz=1 时 _round_sz(0.2)=1，实际始终下 1 张；改为 1 消除歧义。
+    GRID_CONTRACTS_PER_SLOT = 1.0
     # 单仓硬止损：任一 HOLDING 槽位浮亏超此值立即市价平该仓（不等整体止损）
     GRID_PER_SLOT_STOP_USDT = 1.5
 

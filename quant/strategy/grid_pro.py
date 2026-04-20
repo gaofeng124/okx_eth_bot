@@ -985,13 +985,17 @@ class GridProStrategy(TickStrategy):
         )
 
     def _update_tp(self) -> None:
-        """取消旧 TP，以当前 VWAP + 格宽重新挂单。"""
+        """取消旧 TP，以当前 VWAP + 格宽重新挂单。
+        RANGING 模式用 0.8×spacing（快速小利润，避免横盘回撤吃掉浮盈）；
+        其他模式（TRENDING_UP 等）保持 1.0×spacing。
+        """
         if self._total_held <= 0:
             return
         if self._tp_order_id:
             self._cancel_order(self._tp_order_id)
             self._tp_order_id = ""
-        tp = self._vwap * (1.0 + self._grid_spacing)
+        tp_mult = 0.8 if self._regime.current == Regime.RANGING else 1.0
+        tp = self._vwap * (1.0 + self._grid_spacing * tp_mult)
         self._tp_price = tp
         oid = self._place_tp(self._total_held, tp)
         if oid:
