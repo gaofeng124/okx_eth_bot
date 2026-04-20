@@ -38,7 +38,18 @@ EXCHANGE_WALLETS = {
 def _api_key() -> str:
     k = os.environ.get("ETHERSCAN_API_KEY", "").strip()
     if not k:
-        raise RuntimeError("ETHERSCAN_API_KEY not set in env")
+        # 兜底：如果当前进程未 load_dotenv（如临时脚本），尝试自动加载
+        try:
+            from dotenv import load_dotenv
+            for p in ("/root/okx_eth_bot/.env", ".env"):
+                if os.path.exists(p):
+                    load_dotenv(p)
+                    break
+            k = os.environ.get("ETHERSCAN_API_KEY", "").strip()
+        except Exception:
+            pass
+    if not k:
+        raise RuntimeError("ETHERSCAN_API_KEY not set in env or .env")
     return k
 
 
