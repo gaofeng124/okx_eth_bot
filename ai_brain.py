@@ -529,6 +529,8 @@ def iteration(round_n: int) -> int:
         "--allowedTools", "Bash,Read,Write,Edit,Glob,Grep",
         "--output-format", "json",
         "--max-turns", str(MAX_TURNS),
+        # 强制 Sonnet 4.5 —— 避免 CLI auto-select Opus 4.6 1M 耗尽 Max Opus 额度
+        "--model", "claude-sonnet-4-5",
     ]
 
     env = os.environ.copy()
@@ -552,7 +554,8 @@ def iteration(round_n: int) -> int:
     if result.returncode != 0:
         log(
             f"轮 {round_n} Claude CLI 失败 rc={result.returncode} "
-            f"stderr={result.stderr[:500]!r}"
+            f"stderr={result.stderr[:500]!r} "
+            f"stdout={result.stdout[:500]!r}"
         )
         return ERROR_SLEEP_SEC
 
