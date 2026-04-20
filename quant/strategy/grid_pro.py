@@ -287,7 +287,7 @@ class GridProStrategy(TickStrategy):
     _QUOTE_MAX_AGE          = 5.0    # 报价超过 5s 视为过期
     _SPREAD_MAX_BPS         = 12.0   # 点差超过 12bps 不下单
     _VELOCITY_ALARM_PCT       = -0.0020 # -0.2% / 20tick 长窗口接飞刀警报
-    _SHORT_VELOCITY_ALARM_PCT = -0.0025 # -0.25% / 4tick 短窗口急跌过滤（更敏感）
+    _SHORT_VELOCITY_ALARM_PCT = -0.0030 # -0.30% / 4tick 短窗口急跌过滤（20-tick主窗口已提供飞刀保护，短窗口放宽减少假触发）
     _FUNDING_PAUSE_WINDOW   = 600.0  # 距资金费结算 10min 内暂停开新格
     _FUNDING_RATE_MAX       = 0.0005 # 资金费率 > 0.05% 时抑制做多
     _STOP_COUNT_1H_LIMIT    = 3      # 1小时内触发3次止损 → 延长冷静期
@@ -471,6 +471,14 @@ class GridProStrategy(TickStrategy):
                 "[grid] 仪器规格 tickSz=%s lotSz=%s minSz=%s ctVal=%s",
                 self._tick_sz, self._lot_sz, self._min_sz, self._ct_val,
             )
+            eff_sz = self._round_sz(self._contracts_per_slot)
+            if abs(eff_sz - self._contracts_per_slot) > 1e-9:
+                log.warning(
+                    "[grid] contracts_per_slot=%.3f → 实际下单张数=%.6g"
+                    "（受lotSz=%s minSz=%s约束，每张%.4f ETH）",
+                    self._contracts_per_slot, eff_sz,
+                    self._lot_sz, self._min_sz, self._ct_val,
+                )
         except Exception as e:
             log.warning("[grid] 获取仪器规格失败，使用默认值: %s", e)
 
@@ -562,7 +570,12 @@ class GridProStrategy(TickStrategy):
         return str(self._round_price(price))
 
     def _sz(self, contracts: float) -> str:
-        return str(int(self._round_sz(contracts)))
+        v = self._round_sz(contracts)
+        if self._lot_sz >= 1.0:
+            return str(int(v))
+        # fractional lot_sz（如0.01）：避免 int() 截断导致返回 "0"
+        n_dec = max(0, -int(math.floor(math.log10(self._lot_sz))))
+        return f"{v:.{n_dec}f}"
 
     # ══════════════════════════════════════════════════════════════════════════
     # 辅助计算

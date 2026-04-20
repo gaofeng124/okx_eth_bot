@@ -1,19 +1,25 @@
 {
-  "ran_at": "2026-04-20 UTC (第十一轮)",
-  "eth_price": "N/A (网络不可达)",
+  "ran_at": "2026-04-20 09:10 UTC (第十二轮)",
+  "eth_price": "N/A (OKX API 403: Host not in allowlist)",
   "eth_24h_change_pct": "N/A",
-  "fear_greed_index": "N/A (API不可达)",
+  "fear_greed_index": "N/A (网络访问受限)",
   "funding_rate": "N/A",
-  "market_summary": "本轮无网络访问，无法获取实时行情。聚焦代码bug修复：持仓同步阈值0.5对contracts_per_slot=0.2账户过大，导致1-2槽位平仓失败后无法被检测；TRENDING_UP加档逻辑与负资金费率减档逻辑存在相互抵消缺陷。",
-  "decision": "修复持仓同步阈值（0.5→动态threshold=max(slot*0.5,0.05)）+ 阻止负资金费率时TRENDING_UP加档抵消减档保护",
-  "param_changes": [],
+  "market_summary": "本轮无法获取实时市场数据（沙盒环境网络屏蔽OKX/alternative.me API）。基于代码审查，专注提升策略健壮性：修复fractional lot_sz时_sz()截断bug，放宽短窗口速度过滤，增加实际下单张数诊断日志。",
+  "decision": "修复_sz()中int()截断bug（防御fractional lot_sz时返回'0'）+ 放宽SHORT_VELOCITY_ALARM_PCT(-0.0025→-0.003)减少假触发 + 增加contracts_per_slot vs 实际下单张数诊断日志",
+  "param_changes": [
+    {"param": "_SHORT_VELOCITY_ALARM_PCT", "old": -0.0025, "new": -0.003, "reason": "4-tick短窗口-0.25%过于敏感，20-tick主窗口(-0.2%)已提供飞刀保护，放宽至-0.30%减少正常震荡市中的假触发，提升开格频率"}
+  ],
   "code_changes": [
     {
       "file": "quant/strategy/grid_pro.py",
-      "summary": "持仓同步阈值动态化：0.5→max(contracts_per_slot*0.5,0.05)，适配小仓位(0.2张/槽)；阻止TRENDING_UP加档在负资金费率下抵消减档惩罚"
+      "summary": "_sz()修复int()截断bug：lot_sz>=1时用int()，否则根据lot_sz小数位数格式化；避免fractional lot_sz(如0.01)时str(int(0.2))='0'导致下单失败"
+    },
+    {
+      "file": "quant/strategy/grid_pro.py",
+      "summary": "_fetch_instrument_spec后追加有效下单张数警告：若contracts_per_slot被minSz/lotSz约束而改变，明确打印实际下单张数（如0.2→1张），帮助生产日志确认"
     }
   ],
-  "risk_notes": "contracts_per_slot=0.2时旧0.5阈值漏检1-2槽位平仓失败（0.2-0.4张）；极负资金费率+TRENDING_UP+FGI>60时净档位不变，等于没有保护",
-  "next_focus": "验证analysis.jsonl是否有fill_entry/fill_tp事件；观察velocity_alarm频率是否合理(<5次/天)；如触发>5次考虑将SHORT_VELOCITY_ALARM_PCT从-0.0025放宽到-0.003",
-  "round_number": "11"
+  "risk_notes": "当前最大风险：1) 仍无生产日志确认fill事件是否正常；2) GRID_CONTRACTS_PER_SLOT=0.2在lot_sz=1的ETH-USDT-SWAP上实际为1张(0.01ETH≈$16)，设置值具有误导性；3) SHORT_VELOCITY放宽后若遭遇单向急跌，短窗口保护力度略降，但20-tick主窗口仍有效",
+  "next_focus": "P1: 验证生产日志中contracts_per_slot警告是否出现（确认实际下单张数）；P2: 若logs可访问，检查short_drop触发频率是否因本次放宽而改善",
+  "round_number": 12
 }
