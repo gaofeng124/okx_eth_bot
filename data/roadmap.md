@@ -111,7 +111,12 @@ AI 每轮开始，先问自己：
 - [ ] RegimeScore < -0.3 → short-only grid
 - [ ] |RegimeScore| ≤ 0.3 → ranging（可选：两边都挂 0.1 张极小 grid，更谨慎）
 
-### 2.4 验证与放量（AI 自主把关）
+### 2.4 启动条件（2026-04-20 降门槛）
+
+**原条件**：wl_ratio ≥ 0.5 稳定
+**新条件**：**wl_ratio ≥ 0.4 且连续 20 笔 EV > 0 即可启动**（不用等主人确认）
+
+### 2.5 验证与放量（AI 自主把关）
 - [ ] Step 1: short 能正常开仓 + TP + 止损 (小批量 0.1 张 × 2 层)
 - [ ] Step 2: 观察 48h，short side PnL ≥ 0 才进入 Step 3
 - [ ] Step 3: 单边 contracts_per_slot_short 0.1 → 0.15
