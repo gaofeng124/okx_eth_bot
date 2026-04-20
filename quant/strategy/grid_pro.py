@@ -1006,8 +1006,8 @@ class GridProStrategy(TickStrategy):
         """
         TP 追踪：若市场已大幅超过 TP 价格（说明价格继续涨），
         上调 TP 以锁住更多利润。
-        触发条件：mid > tp + 0.4格宽
-        新TP位置：mid - 0.25格宽
+        RANGING 模式：触发阈值收窄至 0.3格宽，步长收窄至 0.15格宽（价格快速反转，需更早锁定）。
+        其他模式：触发阈值 0.4格宽，步长 0.25格宽（给趋势更多空间）。
         节流：两次追踪间隔不小于 _TP_TRAIL_MIN_INTERVAL（30s），避免频繁 API 调用。
         成功追踪后重置 _tp_placed_ts，给TP新的超时窗口（市场上行时不应过早止损）。
         """
@@ -1017,11 +1017,16 @@ class GridProStrategy(TickStrategy):
         if now - self._last_tp_trail_ts < self._TP_TRAIL_MIN_INTERVAL:
             return  # 节流：避免每个 tick 都 cancel/replace TP 单
         spacing_abs = self._grid_spacing * self._vwap
-        if mid > self._tp_price + spacing_abs * 0.4:
-            new_tp = mid - spacing_abs * 0.25
+        # RANGING 均值回归：更早追踪（0.3格）+ 更近落点（0.15格），确保在价格反转前锁定利润
+        is_ranging = self._regime.current == Regime.RANGING
+        trail_trigger_mult = 0.3 if is_ranging else 0.4
+        trail_step_mult    = 0.15 if is_ranging else 0.25
+        if mid > self._tp_price + spacing_abs * trail_trigger_mult:
+            new_tp = mid - spacing_abs * trail_step_mult
             log.info(
-                "[grid] TP 追踪上调：mid=%.2f > tp=%.2f + 0.4格，新TP=%.2f",
-                mid, self._tp_price, new_tp,
+                "[grid] TP 追踪上调(%s)：mid=%.2f > tp=%.2f + %.2f格，新TP=%.2f",
+                "ranging" if is_ranging else "default",
+                mid, self._tp_price, trail_trigger_mult, new_tp,
             )
             if new_tp > self._tp_price:
                 self._cancel_order(self._tp_order_id)

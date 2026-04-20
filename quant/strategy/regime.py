@@ -183,7 +183,7 @@ class RegimeDetector:
         if candidate != self._current:
             elapsed = now - self._current_since
             if elapsed < self._MIN_HOLD_SEC:
-                # 当前状态持续不足 8s，不切换（除非是危险状态）
+                # 当前状态保持不足 _MIN_HOLD_SEC，不切换（危险状态可立即切换）
                 if candidate not in (Regime.TRENDING_DOWN, Regime.VOLATILE):
                     return self._current
             self._transition(candidate, now, reason=f"mb={macro_bias:.4f} ts={ts:.5f} vol={rel_vol:.5f}")

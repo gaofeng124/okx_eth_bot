@@ -3308,23 +3308,29 @@ async def run() -> None:
                     "ticker_ts": row.get("ts") if isinstance(row, dict) else None,
                     "candle_features": _cached_cf or {},
                 }
-                await _dispatch_tick(
-                    strat=strat,
-                    metrics=metrics,
-                    audit=audit,
-                    run_id=run_id,
-                    pipeline=pipeline,
-                    loop=loop,
-                    last=last,
-                    bid=bid,
-                    ask=ask,
-                    market_context=ws_ctx,
-                    session_trade=session_trade,
-                    account_client=account_client,
-                    inv_state=inv_state,
-                    lev5_guard=lev5_guard,
-                    lev5_runtime=lev5_runtime,
-                )
+                try:
+                    await _dispatch_tick(
+                        strat=strat,
+                        metrics=metrics,
+                        audit=audit,
+                        run_id=run_id,
+                        pipeline=pipeline,
+                        loop=loop,
+                        last=last,
+                        bid=bid,
+                        ask=ask,
+                        market_context=ws_ctx,
+                        session_trade=session_trade,
+                        account_client=account_client,
+                        inv_state=inv_state,
+                        lev5_guard=lev5_guard,
+                        lev5_runtime=lev5_runtime,
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except Exception as _dispatch_exc:
+                    log.error("[行情][WS] dispatch_tick 异常（跳过本tick）: %s", _dispatch_exc)
+                    continue
                 # 记录本次 dispatch 时间，供 _ws_stall_watchdog_loop 判断 WS 是否静默
                 if lev5_runtime is not None:
                     lev5_runtime["ws_dispatch_ts"] = time.time()
