@@ -3,6 +3,20 @@
 **目标**：现账户 ~42 USDT → 稳定日收益 2 USDT 保底 → 资金规模扩大后日收益 30 USDT+
 **原则**：每一步都有可验证的 hypothesis + 回退条件，失败则回滚，绝不叠加改动掩盖错误。
 
+## 🚀 2026-04-20 主人授权（重要）
+> "立刻开始做（Phase 2），我都说了只要你认为正确的可以让系统一直升级，
+>  升级一周都可以，直到你认为这个系统已经完美无缺，我要的是稳定赚钱。
+>  不在乎这个系统是哪种策略。我要你做最强的。"
+
+**AI 当前模式：UNLEASHED（解放全速）**
+- 在不违反硬风控底线 + 不违反"铁律"的前提下，自主选择最高价值任务
+- 允许大幅架构重构（不只是小修小补）
+- 允许为新策略/因子写全新模块（不必拘泥现有 grid_pro 框架）
+- Phase 2 (做空) 立即启动，Phase 1 (因子) 并行推进
+- 每完成 Phase 的里程碑 → 发邮件通知（subject 带 "[里程碑]"）
+- 每天至少 1 封日报邮件（subject "[日报]"，晚上 22:00 CST 前发）
+- 连续 3 轮无改动（pure observation） → 邮件提示"已进入稳态，主人是否需要新指令"
+
 ---
 
 ## Phase 0（已完成）：基础设施
@@ -47,26 +61,47 @@
 
 ---
 
-## Phase 2（~2-3 周）：做空能力（grid_bidi）
+## Phase 2（**立即启动** / 预计 1 周）：做空能力（grid_bidi）
 
-**目标**：彻底解决"下跌段只能挨打"的结构性缺陷。
+**目标**：彻底解决"下跌段只能挨打"的结构性缺陷。过去 8h ETH 跌 2% 账户跟跌 2%，这是单向做多的天花板。
 
-### 2.1 架构
-- [ ] 策略层抽象 → 策略支持 `direction ∈ {long, short, both}`
-- [ ] 做空 grid：镜像做多逻辑，short @ 上方、cover @ 下方
-- [ ] 一个时刻只做一个方向（通过 Regime 决定），避免对冲抵消
+### 2.1 架构设计（第一优先任务）
+- [ ] 读懂 grid_pro.py 现有 long-only 逻辑（_place_grid / _update_tp / _emergency_close）
+- [ ] 设计 `GridSlot.side ∈ {"long", "short"}` 扩展
+- [ ] 镜像逻辑：
+  - short 入场：在 center 上方挂 post-only sell（预期价格上冲后回落）
+  - short TP：在 fill 价下方 k× spacing 处挂 buy（反向）
+  - short per_slot_stop：fill_price + threshold/sz 触发市价平仓
+- [ ] 一个时刻只做一个方向（由 Regime Router 决定）→ 避免对冲抵消
+- [ ] **设计选项**（AI 自行评估）：
+  - A) 在 `grid_pro.py` 上扩展（最小改动，风险小）
+  - B) 新写 `grid_bidi.py` 作为平行策略（清晰但多代码）
+  - 建议 A，但如果 grid_pro 太耦合 long-only 逻辑，果断选 B
 
-### 2.2 风控增强
-- [ ] 做空爆仓机制不同（无限上涨 vs 归零下跌），需单独测算 liq price
-- [ ] 初始只在小账户（当前 42U）开一周，每次 `GRID_CONTRACTS_PER_SLOT=0.1`
-- [ ] 连续 2 天做空 PnL 为正，才放大到 0.2
+### 2.2 风控
+- [ ] liq price 做空公式：`liq = avg * (1 + 1/lev - maint_margin)`（OKX isolated net 模式）
+- [ ] short 初始 `GRID_CONTRACTS_PER_SLOT_SHORT=0.1`（独立于 long 的 0.2，先保守）
+- [ ] 新增 .env 参数 `GRID_DIRECTION={long,short,both}`；默认 both；Regime Router 自动选
+- [ ] short 启动前必须通过：小批量 "dry run"（0.01 张测试 1 次反向成交再自动撤）
+  - 注意：这里 dry run **是内部逻辑路径验证**，不是"下实单测试"，禁止下单 API
 
-### 2.3 Regime Router
-- [ ] RegimeScore > 0.3 → 只做多
-- [ ] RegimeScore < -0.3 → 只做空
-- [ ] |RegimeScore| < 0.3 → 震荡模式，grid 双向同时挂（谨慎）
+### 2.3 Regime Router（简化版 V1，足以上线）
+- [ ] RegimeScore 计算：
+  - EMA_fast/slow 斜率 + book_imbalance 短窗口 + OI Δ（如 Phase 1 已有）
+  - 归一到 [-1, +1]
+- [ ] RegimeScore > +0.3 → long-only grid
+- [ ] RegimeScore < -0.3 → short-only grid
+- [ ] |RegimeScore| ≤ 0.3 → ranging（可选：两边都挂 0.1 张极小 grid，更谨慎）
 
-**回退触发**：做空一周 PnL < -2 USDT，关闭做空能力。
+### 2.4 验证与放量（AI 自主把关）
+- [ ] Step 1: short 能正常开仓 + TP + 止损 (小批量 0.1 张 × 2 层)
+- [ ] Step 2: 观察 48h，short side PnL ≥ 0 才进入 Step 3
+- [ ] Step 3: 单边 contracts_per_slot_short 0.1 → 0.15
+- [ ] Step 4: 如果过去 3 天 **任何一天** total PnL < -3 USDT → 自动 `.env GRID_DIRECTION=long` 回退并邮件通知
+
+**铁律**：永不允许 long + short 同时持仓（净敞口对冲 = 白给手续费）。
+
+**回退触发**：连续 2 天做空 PnL < -2 USDT，或硬风控被触发 > 3 次 → 自动关闭做空。
 
 ---
 
