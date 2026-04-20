@@ -45,10 +45,7 @@ AI 每轮开始，先问自己：
 **目标**：给 grid 加"眼睛"，让它知道什么时候该放开做、什么时候该收缩。
 
 ### 1.1 新因子引入（按优先级）
-- [ ] **Book Imbalance** (`book_imb = (bid_vol - ask_vol) / total`, 亚秒级 alpha)
-  - 数据源：OKX WS `books5` 或 `books-l2-tbt`
-  - 用途：开格方向微调（imb > 0.3 偏多、< -0.3 偏空）
-  - 验证：记录 1000 笔成交前后 10 秒的 imbalance → 算信息比
+- [x] **Book Imbalance** （R47 已激活 —— null→-0.81 验证通过）
 - [ ] **OI Δ Rate**（1 分钟 OI 变化率）
   - 数据源：OKX REST `/api/v5/public/open-interest`（每 30s 拉）
   - 用途：OI 激增 + 价格拉动 = 趋势信号
@@ -58,6 +55,16 @@ AI 每轮开始，先问自己：
 - [ ] **Funding Basis**（永续 vs 现货基差，与 funding rate 不同）
   - 数据源：OKX REST 现货 + 永续价格
   - 用途：极端基差时减仓
+- [ ] **Exchange Net Flow** (2026-04-20 新增，Etherscan 链上数据)
+  - 数据源：`quant/tools/onchain.exchange_flow_recent()`
+  - 用途：大型交易所热钱包 24h 净流入 > 0 → 抛压前兆（用户充币打算卖）
+  - 验证：记录 7 天内 Binance-14 + Hot-20 净流入 vs 当日 PnL，找相关
+- [ ] **Whale Tx Count** (2026-04-20 新增)
+  - 数据源：同上 large_inflow_count / large_outflow_count (> 50 ETH 转账)
+  - 用途：鲸鱼活动增加时降低仓位激进度
+- [ ] **Gas Price**（2026-04-20 新增）
+  - 数据源：`gas_oracle()` safe/propose/fast (gwei)
+  - 用途：gas 激增往往伴随 FOMO 或抛售，作为波动率前兆
 
 ### 1.2 特征落盘
 - [ ] 新增 `data/features.jsonl`：每 tick 写一条所有因子值 + 下一秒价格变化
