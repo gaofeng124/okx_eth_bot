@@ -439,6 +439,7 @@ class GridProStrategy(TickStrategy):
         self._last_stop_ts:  float = 0.0
         self._last_cooldown_log_ts: float = 0.0   # 冷静期日志节流
         self._last_tp_trail_ts: float = 0.0       # 上次 TP 追踪时间（节流用）
+        self._tp_fill_profits: deque[float] = deque(maxlen=10)  # 近10次TP成交利润（格宽倍数）
         self._emergency_closing: bool = False
 
         # 止损计数（1h 窗口）
@@ -1245,7 +1246,7 @@ class GridProStrategy(TickStrategy):
         spacing_abs = self._grid_spacing * self._vwap
         # RANGING：步长 0.15 + 触发门槛 0.30；趋势：步长 0.25 + 触发门槛 0.40
         _trail_offset  = 0.15 if _is_ranging else 0.25
-        _trail_trigger = 0.30 if _is_ranging else 0.40
+        _trail_trigger = self._adaptive_trail_trigger(0.30 if _is_ranging else 0.40)
 
         if self._is_short:
             # short：市场继续下跌时向下追踪 TP，锁住更多空头利润
@@ -1281,6 +1282,33 @@ class GridProStrategy(TickStrategy):
                         self._tp_order_id = oid
                         self._tp_placed_ts = now   # 重置超时计时器：市场上行时不应过早触发止损
                     self._last_tp_trail_ts = now   # 无论成功与否都更新节流时间戳
+
+    def _adaptive_trail_trigger(self, base_trigger: float) -> float:
+        """根据近期TP成交利润（格宽倍数）动态调整追踪触发门槛。
+
+        metric: profit_spacings = abs(fill_px - vwap) / spacing
+          < 0.4格均值 → TP 锁利太少（trigger 触发太早/offset 太紧）→ 放宽 trigger +0.10
+          > 0.8格均值 → 市场延伸后才成交（RANGING 中易被回撤）→ 收紧 trigger -0.05
+          中间范围 → 保持 base_trigger，不干预
+
+        至少需要 5 次成交数据才启用自适应，否则直接返回 base。
+        调整幅度有界：[0.20, 0.50]，不超出合理范围。
+        """
+        if len(self._tp_fill_profits) < 5:
+            return base_trigger
+        avg = sum(self._tp_fill_profits) / len(self._tp_fill_profits)
+        if avg < 0.4:
+            adapted = min(base_trigger + 0.10, 0.50)
+        elif avg > 0.8:
+            adapted = max(base_trigger - 0.05, 0.20)
+        else:
+            adapted = base_trigger
+        if adapted != base_trigger:
+            log.debug(
+                "[grid] adaptive trigger: base=%.2f → %.2f (avg_profit=%.3f格, n=%d)",
+                base_trigger, adapted, avg, len(self._tp_fill_profits),
+            )
+        return adapted
 
     def _reset_grid_state(self, reason: str, now: float, cooldown: float = 10.0) -> None:
         """统一网格重置入口：撤销所有入场挂单，清空网格状态，设冷静期。"""
@@ -1463,6 +1491,11 @@ class GridProStrategy(TickStrategy):
                         contracts=s.fill_sz,
                         exit_reason="tp",
                     )
+            # 记录本次 TP 利润（格宽倍数），供 _adaptive_trail_trigger 使用
+            if self._grid_spacing > 0 and self._vwap > 0:
+                spacing_abs = self._grid_spacing * self._vwap
+                profit_spacings = abs(fill_px - self._vwap) / spacing_abs
+                self._tp_fill_profits.append(profit_spacings)
             log.info(
                 "[grid] TP 成交 @%.2f sz=%.1f net=%.4f USDT | 日累计=%.4f USDT",
                 fill_px, actual_fill, total_net, self._pnl.realized,

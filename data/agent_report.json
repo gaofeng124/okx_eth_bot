@@ -1,19 +1,19 @@
 {
-  "ran_at": "2026-04-21 02:00 UTC",
+  "ran_at": "2026-04-21 03:00 UTC",
   "eth_price": "N/A (外网不可达)",
   "eth_24h_change_pct": "N/A",
-  "fear_greed_index": "N/A (API不可达，使用代码内缓存值)",
+  "fear_greed_index": "N/A (API不可达)",
   "funding_rate": "N/A (API不可达)",
-  "market_summary": "外部API不可达，无法获取实时行情。依据上轮（第17轮）状态判断：系统处于持续震荡-RANGING环境，ETH维持区间振荡。核心风控已完备，本轮专注TP追踪精细化。",
-  "decision": "优化_maybe_trail_tp：RANGING模式触发门槛从0.4降至0.30（更快开始追踪），节流间隔从30s降至20s（更频繁更新TP），完善第17轮trail_offset改进，形成完整的RANGING模式TP追踪三件套（TP距离×0.8 + 步长0.15 + 触发0.30 + 间隔20s）",
+  "market_summary": "外部API均不可达（OKX/FGI），无实时市场数据。所有P0参数正常（DAILY_TARGET=999，SESSION=24h，DRAWDOWN=2.0）。系统聚焦代码质量迭代。",
+  "decision": "实现 _trail_trigger 自适应优化：TP成交后记录利润/格宽比，近5次均值<0.4格则放宽trigger(+0.10)，>0.8格则收紧(-0.05)，让系统从实盘数据中学习最优trigger值",
   "param_changes": [],
   "code_changes": [
     {
       "file": "quant/strategy/grid_pro.py",
-      "summary": "_maybe_trail_tp新增regime感知触发门槛(_trail_trigger)和节流间隔(_min_trail_iv)：RANGING模式0.30/20s（更敏感快速锁利），趋势模式0.40/30s（给价格延伸空间）；同时更新日志格式打印trigger和iv参数便于验证"
+      "summary": "新增 _tp_fill_profits deque(maxlen=10) + _adaptive_trail_trigger() 方法；_sync_tp TP成交时记录profit_spacings；_maybe_trail_tp 改用自适应trigger替代硬编码0.30/0.40"
     }
   ],
-  "risk_notes": "RANGING模式0.30触发门槛较激进（原0.40），若ETH价格频繁在TP附近震荡可能导致多次cancel/replace，增加API调用次数和手续费开销；但由于20s节流保护，每分钟最多3次，风险可控",
-  "next_focus": "P1: 验证三件套效果——搜索日志'TP追踪上调'确认[trigger=0.30 iv=20s]参数出现；P2: 资金费率/FGI感知（API可达后）；P3: _trail_trigger自适应（根据最近N次成交时间动态调整0.25~0.40）",
-  "round_number": "18"
+  "risk_notes": "外部API长期不可达，FGI/资金费率感知功能降级为默认值；adaptive trigger 需至少5次TP成交才生效，首次启动仍用base值",
+  "next_focus": "P1: 若获取到实盘日志，验证 adaptive trigger 是否生效（查看 'adaptive trigger: base' 日志行）；P2: 若外网恢复，补全资金费率实时感知",
+  "round_number": "19"
 }
