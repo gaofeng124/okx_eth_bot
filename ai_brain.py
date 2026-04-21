@@ -438,26 +438,53 @@ cd /root/okx_eth_bot && .venv/bin/python notify.py daily
 - RISK_MAX_NOTIONAL_USDT ≤ 120
 - 不可移除 watchdog / systemd / 紧急平仓 / 单仓硬止损
 
-## 🔴 P0 —— 服务器 .env 同步任务（首轮必做，否则新参数不生效）
+## 🔴🔴 P0 P0 P0 —— Phase 1 仓位放大（首轮必执行！主人 2026-04-21 17:30 CST 亲自批准）
 
-项目负责人已在代码里更新了默认值 + 接入了 Taker Flow，但 **.env 是 gitignored 不跟代码走**。
-watchdog 重启后你必须在**首轮**执行：
+186U 账户保证金**仅 20% 利用率**（每 slot 0.4 张，单 slot notional 仅 $93）。
+项目负责人诊断后与主人对齐：加仓 144U 资金基本闲置 → **必须立即放大 2.5×**。
+
+**首轮唯一任务（在其它所有事之前执行）**：
 
 ```bash
 cd /root/okx_eth_bot
-# 1. 看当前 .env 的相关参数
-grep -E "^(GRID_MIN_SPACING_PCT|GRID_MAX_SPACING_PCT|GRID_TP_MULT|TAKER_GATE_MODE)=" .env
-
-# 2. 把 spacing 从 25bps 拉到 32bps（盈亏比救治）
-sed -i 's/^GRID_MIN_SPACING_PCT=.*/GRID_MIN_SPACING_PCT=0.0032/' .env
-sed -i 's/^GRID_MAX_SPACING_PCT=.*/GRID_MAX_SPACING_PCT=0.0060/' .env
-
-# 3. 启用 Taker Gate warn 模式（首日只记录不阻挡，AI 观察触发率）
-grep -q "^TAKER_GATE_MODE=" .env && sed -i 's/^TAKER_GATE_MODE=.*/TAKER_GATE_MODE=warn/' .env || echo "TAKER_GATE_MODE=warn" >> .env
-
-# 4. 验证
-grep -E "^(GRID_MIN_SPACING_PCT|GRID_MAX_SPACING_PCT|TAKER_GATE_MODE)=" .env
+# 执行 Phase 1 放大脚本（幂等 — 二次执行会跳过）
+bash scripts/apply_phase1_scaling.sh
+# 验证结果
+grep -E "^(GRID_CONTRACTS_PER_SLOT_SHORT|GRID_MIN_SPACING_PCT|TAKER_GATE_MODE)=" .env
+ls -la data/.phase1_applied
+tail -30 data/logs/phase1_scaling.log
 ```
+
+**脚本会做**：
+1. 备份 `.env → .env.pre_phase1_<timestamp>`（可回退）
+2. 修改 7 个参数：
+   - `GRID_CONTRACTS_PER_SLOT_SHORT`: 0.4 → **1.0**（仓位 2.5×）
+   - `GRID_CONTRACTS_PER_SLOT`: 原值 → **1.0**（长头也准备好）
+   - `GRID_WHOLE_STOP_USDT`: 3 → **5**（2.7% 权益硬止损）
+   - `GRID_DAILY_STOP_USDT`: 5 → **8**（4.3% 权益日止损）
+   - `GRID_MIN_SPACING_PCT`: 0.0025 → **0.0032**（盈亏比救治）
+   - `GRID_MAX_SPACING_PCT`: 0.0055 → **0.0060**
+   - `TAKER_GATE_MODE`: 未设置 → **warn**（启用 alpha 因子观察）
+3. 写 `data/.phase1_applied` 标记（防重复应用）
+4. pkill run_strategy.py（watchdog 5 分钟内拉起，新参数生效）
+
+**2 小时观察窗口**（首轮执行后记录 ran_at_phase1 到 agent_report.json）：
+- 每轮巡检查：`ps -ef | grep run_strategy | grep -v grep`（是否已重启）
+- 统计 EV：近 20 笔 avg(fillPnl + fee)
+- **若 EV 转负**（从 +0.04 变 -0.01+）→ 自动回退：
+  ```bash
+  cp /root/okx_eth_bot/.env.pre_phase1_* /root/okx_eth_bot/.env
+  rm /root/okx_eth_bot/data/.phase1_applied
+  pkill -f run_strategy.py
+  ```
+  + 发 🚨 邮件 [回退] Phase 1 失败，EV 反向恶化
+
+**Phase 2 条件**（Phase 1 稳定 2h 后自主启动）：
+- 近 20 笔 EV ≥ +0.05/笔
+- 盈亏比 ≥ 0.55
+- 无 whole_stop 触发
+- 达成 → 在 `.env` 把 `GRID_LEVELS` 从 4 → 5（加一档挂单层）
+- 发邮件 [里程碑] Phase 2 启动 + 参数变化
 
 **为什么这些改动**（主人 2026-04-21 17:09 诊断）：
 - 昨日 79 笔 gross +$1.16 但 fee -$1.11 → **手续费吃掉 95% 毛利**
