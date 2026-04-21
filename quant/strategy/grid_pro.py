@@ -1219,29 +1219,41 @@ class GridProStrategy(TickStrategy):
     def _maybe_trail_tp(self, mid: float) -> None:
         """
         TP 追踪：
-          long  → 市场上行 mid > tp + 0.4*spacing，TP 上移到 mid - trail_offset*spacing
-          short → 市场下行 mid < tp - 0.4*spacing，TP 下移到 mid + trail_offset*spacing
-        RANGING 模式：trail_offset = 0.15（更紧，快速锁利）
-        趋势模式：trail_offset = 0.25（更宽，追更大利润）
-        节流：两次追踪间隔不小于 _TP_TRAIL_MIN_INTERVAL（30s），避免频繁 API 调用。
+          long  → 市场上行 mid > tp + _trail_trigger*spacing，TP 上移到 mid - trail_offset*spacing
+          short → 市场下行 mid < tp - _trail_trigger*spacing，TP 下移到 mid + trail_offset*spacing
+
+        RANGING 模式（震荡行情价格延伸有限，需快速锁利）：
+          trail_offset  = 0.15（更紧，TP 离市价更近）
+          _trail_trigger = 0.30（更敏感，价格超出 TP 0.3 格即开始追踪）
+          _min_trail_iv  = 20s（节流更短，允许更频繁追踪）
+
+        趋势模式（价格可能持续延伸，给 TP 更多空间）：
+          trail_offset  = 0.25（更宽，追更大利润）
+          _trail_trigger = 0.40（标准，避免趋势中过早锁定）
+          _min_trail_iv  = 30s（_TP_TRAIL_MIN_INTERVAL，避免频繁 API 调用）
+
         成功追踪后重置 _tp_placed_ts，给TP新的超时窗口（顺势行情中不应过早止损）。
         """
         if not self._tp_order_id or self._tp_price <= 0:
             return
         now = time.time()
-        if now - self._last_tp_trail_ts < self._TP_TRAIL_MIN_INTERVAL:
+        _is_ranging = self._current_regime == Regime.RANGING
+        # RANGING 模式：节流 20s（更频繁）；趋势模式：节流 30s（_TP_TRAIL_MIN_INTERVAL）
+        _min_trail_iv = 20.0 if _is_ranging else self._TP_TRAIL_MIN_INTERVAL
+        if now - self._last_tp_trail_ts < _min_trail_iv:
             return  # 节流：避免每个 tick 都 cancel/replace TP 单
         spacing_abs = self._grid_spacing * self._vwap
-        # RANGING 模式：追踪步长缩短，快速锁住利润；趋势模式：步长较大，追更多利润
-        _trail_offset = 0.15 if self._current_regime == Regime.RANGING else 0.25
+        # RANGING：步长 0.15 + 触发门槛 0.30；趋势：步长 0.25 + 触发门槛 0.40
+        _trail_offset  = 0.15 if _is_ranging else 0.25
+        _trail_trigger = 0.30 if _is_ranging else 0.40
 
         if self._is_short:
             # short：市场继续下跌时向下追踪 TP，锁住更多空头利润
-            if mid < self._tp_price - spacing_abs * 0.4:
+            if mid < self._tp_price - spacing_abs * _trail_trigger:
                 new_tp = mid + spacing_abs * _trail_offset
                 log.info(
-                    "[grid] TP 追踪下调（short）：mid=%.2f < tp=%.2f - 0.4格，新TP=%.2f [offset=%.2f]",
-                    mid, self._tp_price, new_tp, _trail_offset,
+                    "[grid] TP 追踪下调（short）：mid=%.2f < tp=%.2f - %.2f格，新TP=%.2f [offset=%.2f iv=%.0fs]",
+                    mid, self._tp_price, _trail_trigger, new_tp, _trail_offset, _min_trail_iv,
                 )
                 if new_tp < self._tp_price:
                     self._cancel_order(self._tp_order_id)
@@ -1254,11 +1266,11 @@ class GridProStrategy(TickStrategy):
                     self._last_tp_trail_ts = now
         else:
             # long：市场继续上涨时向上追踪 TP
-            if mid > self._tp_price + spacing_abs * 0.4:
+            if mid > self._tp_price + spacing_abs * _trail_trigger:
                 new_tp = mid - spacing_abs * _trail_offset
                 log.info(
-                    "[grid] TP 追踪上调：mid=%.2f > tp=%.2f + 0.4格，新TP=%.2f [offset=%.2f]",
-                    mid, self._tp_price, new_tp, _trail_offset,
+                    "[grid] TP 追踪上调：mid=%.2f > tp=%.2f + %.2f格，新TP=%.2f [offset=%.2f iv=%.0fs]",
+                    mid, self._tp_price, _trail_trigger, new_tp, _trail_offset, _min_trail_iv,
                 )
                 if new_tp > self._tp_price:
                     self._cancel_order(self._tp_order_id)
