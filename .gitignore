@@ -9,6 +9,7 @@ data/*
 !data/upgrade_plan.md
 !data/research_log.md
 !data/design_*.md
+!data/lead_commitments.md
 # Claude Code 运行时缓存 —— 不提交（含权限缓存、会话等，且可能含 SSH 密码片段）
 .claude/
 .idea/
