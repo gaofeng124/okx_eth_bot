@@ -16,6 +16,7 @@
 - **L7** 外部冲击（黑天鹅、系统性事件）
 - **L8** 数据延迟 / 网络故障
 - **L9** 手续费错算 / 价格精度问题
+- **L10** 运行态异常未主动检测（daemon 的学习循环缺口）
 
 ---
 
@@ -119,6 +120,42 @@
 - ✅ book_imb gate 日志实测在工作（之前以为坏的是记录层而非因子层）
 - 🟡 待做：TP aging 加强 / 30min_high 兜底 / analysis.jsonl 记录修复
 - 🟡 L3-001 家族"持仓期间下跌"问题：L2 上线后下跌时做空也能赚 → 部分自愈
+
+---
+
+### L10-001 | 2026-04-21 21:30 CST | 无直接亏损但 **机会成本 = 1h47min 资金闲置**
+
+**事件**：Phase 1 部署后 CST 19:43:35 最后一笔成交，此后 1h47min **零成交**，账户保证金利用率仅 7.5%，挂单数量仅 1 档（设计 4 档）。
+
+**根因（多层）**：
+1. **`grid_pro.py` line 1144 US session hard cap**：UTC 13-23 时段 `n_active=1`（不管 max_levels）
+   - 这是前任 AI daemon 基于 3/3 亏损样本加的保守，**样本太小**
+   - 加的时期是**纯多头**，现在 L2 做空结论可能反向
+   - 做空方向下 US session 反而常常是有利的（美股下跌带 ETH 下跌）
+2. **`spacing 硬下限 32bps`**：市场 30min range 34bps 时，挂单距离 > 波动幅度 → 等不到成交
+3. **`vol_regime active_levels` 限档**：CALM/ELEVATED 强制 2 档（应放到 3-max）
+4. **缺少运行态主动监控**：daemon prompt 里没有"近 30min 无成交→立即诊断"规则
+
+**永久性防护**（commit 待定）：
+1. **代码层**：
+   - `active_levels()`: CALM/ELEVATED 从 `min(2,max)` 放到 `min(3,max)`
+   - US session cap: `=1` 改为 `=min(2,n_active)`（保留一定保守但不过度）
+   - `spacing_pct` 的 min_sp 默认从 0.0032 → 0.0020（让静市能挂近）
+2. **监控层** 新增 `scripts/system_health.py`：
+   - 每轮计算：近 30/60min 成交数 / 资金利用率 / 挂单数量 / fee-gross 比率
+   - daemon 每轮 Step 2 必调用
+3. **AI prompt 层**：
+   - 新增 **异常信号表**：信号 → 必做诊断（如"近 30min 零成交 → 检查 spacing vs ATR"）
+   - 把 L10 列为与亏损同级的"系统失败"告警
+4. **Phase 2 前置**：GRID_LEVELS 4→5（更多档，减轻"一档失效全军覆没"）
+
+**回归测试**（下次须验证）：
+- [ ] US session 期间挂单数 ≥ 2（不再只 1 档）
+- [ ] 当 ATR < 25bps 时，spacing ≤ 25bps（贴合市场不超 ATR）
+- [ ] `system_health.py` 返回 `idle_min_count` 字段，daemon 日志证实每轮读了
+- [ ] 资金利用率常态 ≥ 25%（不是峰值，是平均）
+
+**状态**：🟡 待修复（commit 进行中）
 
 ---
 

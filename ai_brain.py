@@ -634,17 +634,39 @@ PY
    - 选当前 Phase 最高优先级的未完成项作为本轮 focus（如果战术层没有紧急事）
    - 不跳步、不叠加、不敷衍
 
-### Step 2 收集状态（信息层）
+### Step 2 收集状态（信息层）—— ⚠️ L10-001 强制增补 **每轮必调 system_health**
+
 ```bash
+# 【新】运行态健康扫描 —— 本轮一切决策的前置依据（不可跳过！）
+.venv/bin/python -m quant.tools.system_health --json > /tmp/health.json
+cat /tmp/health.json  # 读一下看异常
+
+# 基础信息
 ps -ef | grep run_strategy | grep -v grep
 tail -50 data/logs/pnl_snapshots.jsonl
 DATE=$(date -u +%Y-%m-%d); tail -30 data/logs/daily/$DATE/analysis.jsonl
-# 健康检查（今日 PnL + tier 评估 + 连续亏损检测 + alerts）
+
+# 每日 PnL 健康（承诺执行器）
 .venv/bin/python -m quant.tools.daily_health
 ```
-用 `/tmp/okx_call.py` 查余额 / 持仓 / 近 100 笔成交 / 当前挂单（`/api/v5/trade/orders-pending`）。
 
-**`daily_health` 输出中的 alerts 字段是铁律触发依据**：
+### 🚨 `system_health` 异常信号表（任一触发 → 本轮必介入，不得跳过）
+
+| 异常 | 含义 | 必做诊断 / 动作 |
+|---|---|---|
+| `LOW_CAPITAL_USAGE` | 资金利用率 < 15% | 查 Phase 是否卡住；挂单数是否 < 预期；是否 US session cap 阻挡 |
+| `MISSING_GRID_LEVELS` | 实际挂单 < max_levels/2 | 查 vol_regime 是否 DEAD/ELEVATED 限档；查 gate 阻挡率 |
+| `STALL_NO_FILLS` | 近 30min 零成交（市场活跃）| 查 spacing vs ATR；挂单距离是否 > 30min range；必要时收紧 spacing |
+| `SPACING_TOO_WIDE` | spacing > 2× ATR_30m | 立即 `sed -i 's/^GRID_MIN_SPACING_PCT=.*/GRID_MIN_SPACING_PCT=0.0018/' .env` + pkill |
+| `FEE_GROSS_RATIO_HIGH` | 近 20 笔 fee/gross > 40% | 反向：spacing 太窄，拉宽到 0.0030+ |
+| `UNREALIZED_BLEEDING` | 浮亏 > $1 | 查持仓时长；接近 per_slot_stop 主动平仓 |
+| `DAEMON_INACTIVE` | agent_report 30min+ 未更新 | ❗️这是你自己；如果看到此信号，立即强制写 agent_report.json |
+
+### 🚨 运行态异常 = 与亏损同级（L10-001 铁律）
+
+**同根因不得重复**：如果连续 3 轮 `system_health` 报同一异常但未修复 → 视为你的失职，等同 loss 未根因分析。
+
+**`daily_health` 输出中的 alerts 字段**：
 - `🚨 单日严重亏损超限` → 本轮立即做根因分析
 - `⚠️ 连续 N 日负 PnL` → 暂停新功能，修主策略
 - `🛑 连续 3 日负 PnL` → 发邮件等主人审批

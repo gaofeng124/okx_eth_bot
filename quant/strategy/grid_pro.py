@@ -152,12 +152,16 @@ class _VolEngine:
         return VolRegime.EXTREME                              # >40bps：极端
 
     def active_levels(self, max_levels: int = 4) -> int:
-        """根据波动率状态决定激活几档网格。"""
+        """根据波动率状态决定激活几档网格。
+        L10-001 修复（2026-04-21 21:30）：放宽 CALM/ELEVATED 档位限制以提高资金利用率。
+        - 原：CALM/ELEVATED 限 2 档 → 186U 账户利用率仅 7.5%
+        - 新：CALM/ELEVATED 改 min(3, max) → 常态利用率 20-35%
+        """
         vr = self.vol_regime
         if vr == VolRegime.DEAD:     return 1                  # 极低波动：挂 1 档观察
-        if vr == VolRegime.CALM:     return min(2, max_levels)
+        if vr == VolRegime.CALM:     return min(3, max_levels)  # 原 2 → 3
         if vr == VolRegime.NORMAL:   return max_levels
-        if vr == VolRegime.ELEVATED: return min(2, max_levels)
+        if vr == VolRegime.ELEVATED: return min(3, max_levels)  # 原 2 → 3
         return 0  # EXTREME：停止
 
     def spacing_pct(self, atr_mult: float, min_sp: float, max_sp: float) -> float:
@@ -1138,13 +1142,14 @@ class GridProStrategy(TickStrategy):
                 self._fear_greed_index, "空" if self._is_short else "多", n_active,
             )
 
-        # US session (UTC 13-23 / CST 21-07): cap levels to 1
-        # Data: 50-fill window 3/3 losses all in US session, 0/9 in Asia session
-        # Reduces max exposure during high-directional-risk hours
+        # US session (UTC 13-23 / CST 21-07): cap levels to 2 (原 1，L10-001 放宽)
+        # 历史数据：50-fill 窗口 3/3 亏损在 US session，但样本太小且那时纯多头。
+        # L2 做空上线后 US session 可能反而有利（美股下跌带 ETH 下跌 → 做空顺势）。
+        # 放宽到 2 档保留一定保守性同时避免"全时段只 1 档"资金闲置问题。
         _utc_h = time.gmtime().tm_hour
-        if 13 <= _utc_h <= 23 and n_active > 1:
-            n_active = 1
-            log.info("[grid] US session (UTC %02d), levels capped→1", _utc_h)
+        if 13 <= _utc_h <= 23 and n_active > 2:
+            n_active = 2
+            log.info("[grid] US session (UTC %02d), levels capped→2", _utc_h)
 
         # 顺势偏置：
         #   long  → TRENDING_UP   时 bias=0.5（更靠近当前价）+ spacing*1.3（TP更远）
