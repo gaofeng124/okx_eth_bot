@@ -1,19 +1,19 @@
 {
-  "ran_at": "2026-04-20 12:10 UTC",
-  "eth_price": "N/A (网络不可达)",
+  "ran_at": "2026-04-21 00:00 UTC",
+  "eth_price": "N/A (无外网)",
   "eth_24h_change_pct": "N/A",
-  "fear_greed_index": "N/A (获取失败)",
-  "funding_rate": "N/A (获取失败)",
-  "market_summary": "市场数据无法获取（网络限制）。系统参数状态良好：GRID_DAILY_TARGET=999，BOT_MAX_SESSION=24，P0/P1问题已在前14轮全部修复。本轮执行P3优化：整体止损从固定5U改为动态计算（账户余额×10%，最低4U）。",
-  "decision": "grid_pro.py 整体止损从固定5.0U升级为动态计算：max(4.0, equity×10%)，账户成长时止损随之放宽，账户缩水时自动收紧",
+  "fear_greed_index": "N/A (无外网)",
+  "funding_rate": "N/A",
+  "market_summary": "外网不可达，无法获取实时行情。代码审计发现第15轮的动态整体止损计划（upgrade_plan.md中记录为已完成）实际上未落地——on_tick Step 6仍使用固定 self._whole_stop。本轮同时补齐两个动态阈值。",
+  "decision": "补齐第15轮漏实现的动态整体止损；新增动态峰值回撤上限（max(1.5U, equity×4%)），两者均随账户余额自适应",
   "param_changes": [],
   "code_changes": [
     {
       "file": "quant/strategy/grid_pro.py",
-      "summary": "整体浮亏止损改为动态计算 _eff_whole_stop = max(4.0, equity*0.10)，日志中输出有效阈值和当前余额"
+      "summary": "①_DailyPnL新增set_dynamic_drawdown_limit()方法：每tick按equity×4%（min 1.5U）更新回撤上限；②on_tick Step4 equity计算后立即调用该方法；③on_tick Step6整体止损改用_eff_whole_stop=max(4.0,equity×10%)，日志新增有效阈值和余额字段"
     }
   ],
-  "risk_notes": "动态止损依赖 usdt_avail_swap 作为余额代理，若账户余额数据异常（返回0），fallback为固定的 self._whole_stop=5.0U，安全兜底已有保障",
-  "next_focus": "P1: 检查生产日志确认dispatch_tick异常防护未频繁触发；P3: 考虑 GRID_DRAWDOWN_FROM_PEAK_USDT 也做动态化（当前固定2.0U较紧）",
-  "round_number": "15"
+  "risk_notes": "两处动态止损均在equity为None时fallback到固定值（whole_stop=5U, drawdown=2U），safe fallback已验证。drawdown更新有1-tick滞后（Step4更新，Step1下tick生效），WS频率下<1秒，可接受。",
+  "next_focus": "P1: 查看runner.py中equity_usdt是否被正确写入runtime字典（动态止损依赖此字段），若缺失则两处dynamic计算均fallback固定值，需修复数据管道",
+  "round_number": 16
 }

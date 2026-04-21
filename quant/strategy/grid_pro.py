@@ -264,6 +264,11 @@ class _DailyPnL:
 
         return False, ""
 
+    def set_dynamic_drawdown_limit(self, equity: float | None) -> None:
+        """动态调整峰值回撤上限：max(1.5U, equity×4%)，随账户余额自适应。"""
+        if equity and equity > 0:
+            self._drawdown_limit = max(1.5, equity * 0.04)
+
     def profit_protect_mode(self) -> bool:
         """达到日目标后进入保护模式：不开新格，只管存量持仓到 TP。"""
         return self._realized >= self._target
@@ -1824,6 +1829,7 @@ class GridProStrategy(TickStrategy):
             or _strat_rt.get("usdt_avail_swap")
             or 0.0
         ) or None
+        self._pnl.set_dynamic_drawdown_limit(equity)
         safe, safety_reason = self._check_leverage_safety(mid, equity)
         _margin_overuse = False
         if not safe:
@@ -1864,10 +1870,14 @@ class GridProStrategy(TickStrategy):
                     self._emergency_close(f"per_slot_stop_L{s.level}", mid)
                     return None
 
-        # ── 6. 整体浮亏止损 ─────────────────────────────────────────────────
+        # ── 6. 整体浮亏止损（动态阈值：max(4U, equity×10%)）────────────────
         unrealized = self._calc_unrealized(mid)
-        if unrealized <= -self._whole_stop:
-            log.warning("[grid] 整体止损: 浮亏=%.4f USDT", unrealized)
+        _eff_whole_stop = max(4.0, equity * 0.10) if equity else self._whole_stop
+        if unrealized <= -_eff_whole_stop:
+            log.warning(
+                "[grid] 整体止损: 浮亏=%.4f USDT 有效阈值=%.2fU 余额=%.2fU",
+                unrealized, _eff_whole_stop, equity or 0.0,
+            )
             self._emergency_close("whole_grid_stop", mid)
             return None
 
