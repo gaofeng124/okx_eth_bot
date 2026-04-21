@@ -143,26 +143,34 @@ class _VolEngine:
     @property
     def vol_regime(self) -> str:
         # 用 atr_medium 判断，tick 不足时默认 CALM（允许正常开格，避免过度保守）
+        # L10-001 续（2026-04-21 21:55）：ETH 晚间 15m range 40-80bps 是正常波动，
+        #   实测 21:XX 平均 46bps 就被判 EXTREME=停止开格 → 主人加仓 144U 在此期间完全闲置。
+        #   改为：EXTREME 门槛 40→80bps（只拦截真正的闪崩/急拉）
         atr = self.atr_medium
         if self._tick_count < 20:   return VolRegime.CALM    # 数据不足→默认 CALM
         if atr < 0.000005: return VolRegime.DEAD             # <0.05bps：市场真正冻结（REST过滤后仍为0）
         if atr < 0.0008:  return VolRegime.CALM              # 0.05-8bps：正常（含 REST 模式低波动）
         if atr < 0.0025:  return VolRegime.NORMAL            # 8-25bps：活跃
-        if atr < 0.0040:  return VolRegime.ELEVATED          # 25-40bps：高波动
-        return VolRegime.EXTREME                              # >40bps：极端
+        if atr < 0.0080:  return VolRegime.ELEVATED          # 25-80bps：高波动（原 25-40bps，阈值提高）
+        return VolRegime.EXTREME                              # >80bps：极端（原 >40bps，太敏感）
 
     def active_levels(self, max_levels: int = 4) -> int:
         """根据波动率状态决定激活几档网格。
         L10-001 修复（2026-04-21 21:30）：放宽 CALM/ELEVATED 档位限制以提高资金利用率。
         - 原：CALM/ELEVATED 限 2 档 → 186U 账户利用率仅 7.5%
         - 新：CALM/ELEVATED 改 min(3, max) → 常态利用率 20-35%
+
+        L10-001 续（2026-04-21 21:55）：EXTREME 从"完全停止"改为"挂 1 档观察"
+        - 原：EXTREME 返回 0 → 策略完全熔断
+        - 新：EXTREME 返回 1 → 挂 1 档观察，保留最小资金流动性
+        - 理由：真正极端行情（>80bps）也不该让账户完全闲置，1 档有限敞口可观察
         """
         vr = self.vol_regime
         if vr == VolRegime.DEAD:     return 1                  # 极低波动：挂 1 档观察
         if vr == VolRegime.CALM:     return min(3, max_levels)  # 原 2 → 3
         if vr == VolRegime.NORMAL:   return max_levels
         if vr == VolRegime.ELEVATED: return min(3, max_levels)  # 原 2 → 3
-        return 0  # EXTREME：停止
+        return 1  # EXTREME：原 0（完全停）→ 1（挂 1 档，保留流动性）
 
     def spacing_pct(self, atr_mult: float, min_sp: float, max_sp: float) -> float:
         """格宽 = clamp(short_ATR × mult, min, max)。"""
