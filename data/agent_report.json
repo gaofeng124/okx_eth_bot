@@ -1,19 +1,19 @@
 {
-  "ran_at": "2026-04-21 03:00 UTC",
-  "eth_price": "N/A (外网不可达)",
+  "ran_at": "2026-04-21 04:00 UTC",
+  "eth_price": "N/A (外部API不可达)",
   "eth_24h_change_pct": "N/A",
-  "fear_greed_index": "N/A (API不可达)",
-  "funding_rate": "N/A (API不可达)",
-  "market_summary": "外部API均不可达（OKX/FGI），无实时市场数据。所有P0参数正常（DAILY_TARGET=999，SESSION=24h，DRAWDOWN=2.0）。系统聚焦代码质量迭代。",
-  "decision": "实现 _trail_trigger 自适应优化：TP成交后记录利润/格宽比，近5次均值<0.4格则放宽trigger(+0.10)，>0.8格则收紧(-0.05)，让系统从实盘数据中学习最优trigger值",
+  "fear_greed_index": "N/A (外部API不可达)",
+  "funding_rate": "N/A (外部API不可达)",
+  "market_summary": "本轮外部市场API全部不可达，无法获取实时行情。策略持续以本地数据运行。P0参数状态良好（GRID_DAILY_TARGET=999，DRAWDOWN=2.0，满足≥2.0要求）。",
+  "decision": "实现 _adaptive_trail_offset 方法：与第19轮 _adaptive_trail_trigger 形成双维度自适应闭环，TP步长也根据近期成交利润格宽倍数自动调节",
   "param_changes": [],
   "code_changes": [
     {
       "file": "quant/strategy/grid_pro.py",
-      "summary": "新增 _tp_fill_profits deque(maxlen=10) + _adaptive_trail_trigger() 方法；_sync_tp TP成交时记录profit_spacings；_maybe_trail_tp 改用自适应trigger替代硬编码0.30/0.40"
+      "summary": "新增 _adaptive_trail_offset 方法（30行），并将 _maybe_trail_tp 中固定 _trail_offset 改为调用该方法：avg<0.30格则+0.03放宽，avg>0.80格则-0.03收紧，有界[0.08,0.35]，至少5次成交后生效"
     }
   ],
-  "risk_notes": "外部API长期不可达，FGI/资金费率感知功能降级为默认值；adaptive trigger 需至少5次TP成交才生效，首次启动仍用base值",
-  "next_focus": "P1: 若获取到实盘日志，验证 adaptive trigger 是否生效（查看 'adaptive trigger: base' 日志行）；P2: 若外网恢复，补全资金费率实时感知",
-  "round_number": "19"
+  "risk_notes": "外部API（市价/FGI/资金费率）长期不可达，相关感知功能降级为默认值；adaptive系列需5次真实TP成交才生效，冷启动期间使用固定base值",
+  "next_focus": "P2: 实现资金费率感知代码框架（即使API不可达也应有fallback逻辑），funding_rate<-0.01%时多头减1档",
+  "round_number": "20"
 }

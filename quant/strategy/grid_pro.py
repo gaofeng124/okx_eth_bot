@@ -1245,7 +1245,8 @@ class GridProStrategy(TickStrategy):
             return  # 节流：避免每个 tick 都 cancel/replace TP 单
         spacing_abs = self._grid_spacing * self._vwap
         # RANGING：步长 0.15 + 触发门槛 0.30；趋势：步长 0.25 + 触发门槛 0.40
-        _trail_offset  = 0.15 if _is_ranging else 0.25
+        # 两者均通过实盘成交利润自适应调整，形成双维度闭环
+        _trail_offset  = self._adaptive_trail_offset(0.15 if _is_ranging else 0.25)
         _trail_trigger = self._adaptive_trail_trigger(0.30 if _is_ranging else 0.40)
 
         if self._is_short:
@@ -1307,6 +1308,34 @@ class GridProStrategy(TickStrategy):
             log.debug(
                 "[grid] adaptive trigger: base=%.2f → %.2f (avg_profit=%.3f格, n=%d)",
                 base_trigger, adapted, avg, len(self._tp_fill_profits),
+            )
+        return adapted
+
+    def _adaptive_trail_offset(self, base_offset: float) -> float:
+        """根据近期TP成交利润（格宽倍数）动态调整追踪步长（trail_offset）。
+
+        metric: profit_spacings = abs(fill_px - vwap) / spacing
+          < 0.30格均值 → 利润偏低（offset 太紧，TP 离市价太近）→ 放宽 +0.03
+          > 0.80格均值 → 利润充足但延迟锁定 → 收紧 -0.03
+          中间范围 → 保持 base_offset，不干预
+
+        至少需要 5 次成交数据才启用自适应，否则直接返回 base。
+        调整幅度有界：[0.08, 0.35]，防止极端飘移。
+        与 _adaptive_trail_trigger 共用同一信号源（_tp_fill_profits）形成双维度闭环。
+        """
+        if len(self._tp_fill_profits) < 5:
+            return base_offset
+        avg = sum(self._tp_fill_profits) / len(self._tp_fill_profits)
+        if avg < 0.30:
+            adapted = min(base_offset + 0.03, 0.35)
+        elif avg > 0.80:
+            adapted = max(base_offset - 0.03, 0.08)
+        else:
+            adapted = base_offset
+        if adapted != base_offset:
+            log.debug(
+                "[grid] adaptive offset: base=%.2f → %.2f (avg_profit=%.3f格, n=%d)",
+                base_offset, adapted, avg, len(self._tp_fill_profits),
             )
         return adapted
 
