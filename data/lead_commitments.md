@@ -42,10 +42,43 @@ pkill -f run_strategy.py
 ```
 + 邮件 `[里程碑] Phase 3 启动：每 slot 1.0→1.2 张，预期峰值利用率 ~75%`
 
-### Phase 4（需要主人明确批准 —— 绝不自主执行）
+### Phase 4 自动触发（主人 2026-04-21 22:15 CST 选 B 激进版授权）
 
-> "GRID_LEVELS=6 或 contracts_per_slot=1.5+" = 利用率 > 85%。
-> AI 必须发邮件 [请批] 征求主人同意，不自作主张。
+**条件**（全部满足，Phase 3 稳定 ≥ 120 分钟后）：
+- Phase 3 首 120 min 累计 PnL ≥ +$1.00
+- 近 30 笔 EV ≥ +$0.08/笔
+- WL ≥ 0.60
+- whole_stop/daily_stop 从未触发过
+- 市场非趋势日（近 4h |delta| < 1.0%）
+- 权益 ≥ $185
+
+**动作**（一键执行 apply_phase4_scaling.sh）：
+```bash
+# 1. 提高挂单档位到 6
+sed -i.tmp 's/^GRID_LEVELS=.*/GRID_LEVELS=6/' .env
+# 2. 放大 whole_stop 到 $10（配合 90% 利用率的波动空间）
+sed -i.tmp 's/^GRID_WHOLE_STOP_USDT=.*/GRID_WHOLE_STOP_USDT=10.0/' .env
+# 3. 放大 daily_stop 到 $15
+sed -i.tmp 's/^GRID_DAILY_STOP_USDT=.*/GRID_DAILY_STOP_USDT=15.0/' .env
+rm -f .env.tmp
+date '+%Y-%m-%d %H:%M:%S' > data/.phase4_applied
+pkill -f run_strategy.py
+```
++ 邮件 `[里程碑] Phase 4 启动：GRID_LEVELS 5→6 + whole_stop $5→$10，预期峰值 ~85-90%`
+
+### Phase 4 特殊防护（必须在 Phase 4 代码路径加）
+
+1. **趋势日自动降级**：每 10min 评估近 4h 价格 delta
+   - 若 |delta| > 1.5% → 自动回 Phase 3（.env 改 GRID_LEVELS=5 + pkill）
+   - 趋势日高杠杆 grid 必挨砸，这是铁律
+
+2. **whole_stop 熔断冷却延长**：Phase 4 若触发 whole_stop → 冷却 60min（原 5min）
+   - 90% 利用率下触发 = 剧烈市场 → 延长观察
+   - 期间 strategy 不开新仓
+
+3. **dayly_stop 触发 → 自动回退到 Phase 1**（不是 Phase 3）
+   - 证明 Phase 4 失败 → 直接退到安全基线（CPS=1.0 + LEVELS=5）
+   - 且立即发邮件 [紧急回退]
 
 ---
 

@@ -472,6 +472,12 @@ class GridProStrategy(TickStrategy):
         self._fear_greed_index: int   = 50
         self._last_fgi_ts:      float = 0.0
 
+        # Phase 4 趋势日守卫（主人 2026-04-21 22:15 批准 B 激进版时要求）
+        # 每 10min 评估近 4h K 线 delta：若 |delta| > 1.5% → 自动降回 Phase 3
+        # 原因：90% 利用率 + 趋势日 = 必爆仓；grid 策略依赖震荡不是单边
+        self._last_p4_guard_ts: float = 0.0
+        self._p4_trend_guard_enabled: bool = os.getenv("GRID_PHASE4_TREND_GUARD", "0") == "1"
+
         # REST 客户端
         self._rest = OKXRestClient()
 
@@ -1609,6 +1615,67 @@ class GridProStrategy(TickStrategy):
             log.debug("[grid] 恐贪指数获取失败（保留缓存值 %d）: %s", self._fear_greed_index, e)
 
     # ══════════════════════════════════════════════════════════════════════════
+    # Phase 4 趋势日守卫（主人 2026-04-21 22:15 批准 B 激进版）
+    # ══════════════════════════════════════════════════════════════════════════
+
+    def _check_phase4_trend_guard(self, now: float) -> None:
+        """
+        Phase 4（GRID_LEVELS=6）模式下每 10min 检查近 4h 趋势。
+        若 |delta_4h| > 1.5% → 自动降回 Phase 3（.env 改 GRID_LEVELS=5 + pkill）。
+
+        原因：90% 利用率 + 单边趋势 = 每 1% 逆向 = 9% 账户回撤。
+        grid 策略依赖震荡，趋势日应自动降级避免爆仓。
+        """
+        if not self._p4_trend_guard_enabled:
+            return
+        if now - self._last_p4_guard_ts < 600.0:  # 每 10min 一次
+            return
+        self._last_p4_guard_ts = now
+
+        try:
+            import urllib.request as _ur, json as _json
+            with _ur.urlopen(
+                "https://www.okx.com/api/v5/market/candles"
+                "?instId=ETH-USDT-SWAP&bar=15m&limit=16", timeout=5
+            ) as r:
+                candles = _json.loads(r.read())["data"]
+            if len(candles) < 16:
+                return
+            last_close = float(candles[0][4])
+            first_close = float(candles[-1][4])
+            delta_pct = (last_close - first_close) / first_close * 100
+
+            if abs(delta_pct) > 1.5:
+                # 趋势日：自动降回 Phase 3
+                log.warning(
+                    "[grid][P4-GUARD] 近 4h delta=%.2f%% 突破 1.5%% 阈值，"
+                    "自动降回 Phase 3 (GRID_LEVELS 6→5) + 邮件 [异动]",
+                    delta_pct,
+                )
+                import subprocess
+                subprocess.run(
+                    ["sed", "-i.tmp",
+                     "s/^GRID_LEVELS=.*/GRID_LEVELS=5/",
+                     "/root/okx_eth_bot/.env"],
+                    check=False,
+                )
+                subprocess.run(
+                    ["rm", "-f", "/root/okx_eth_bot/.env.tmp"],
+                    check=False,
+                )
+                # 移除 phase4 标记，记录降级时间
+                subprocess.run(
+                    ["rm", "-f", "/root/okx_eth_bot/data/.phase4_applied"],
+                    check=False,
+                )
+                with open("/root/okx_eth_bot/data/.p4_downgraded", "w") as f:
+                    f.write(f"降级时间 {time.strftime('%Y-%m-%d %H:%M:%S')} delta_4h={delta_pct:.2f}%")
+                # 触发 watchdog 重启
+                subprocess.run(["pkill", "-f", "run_strategy.py"], check=False)
+        except Exception as e:
+            log.debug("[grid][P4-GUARD] 趋势日检查失败（不影响主策略）: %s", e)
+
+    # ══════════════════════════════════════════════════════════════════════════
     # 持仓同步校验
     # ══════════════════════════════════════════════════════════════════════════
 
@@ -1827,6 +1894,8 @@ class GridProStrategy(TickStrategy):
         # 资金费率刷新
         self._refresh_funding(runtime, now)
         self._refresh_fgi(now)
+        # Phase 4 趋势日守卫（仅在 GRID_PHASE4_TREND_GUARD=1 时生效）
+        self._check_phase4_trend_guard(now)
 
         # ── 重启恢复：有持仓但无TP ────────────────────────────────────────────
         # 重启时 _cancel_stale_orders 会撤掉旧TP，而 _tp_order_id 初始化为 ""，
