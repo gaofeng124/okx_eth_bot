@@ -33,14 +33,17 @@ REPORT_PATH = PROJ / "data" / "agent_report.json"
 
 # 每轮 Claude CLI 最长允许跑 20 分钟（鼓励深度思考）
 CLAUDE_RUN_TIMEOUT_SEC = 1200
-# Claude 内部最多迭代多少轮工具（鼓励深度分析）
+# Claude 内部最多迭代多少轮工具（鼓励深度分析）—— 单轮深度不变
 MAX_TURNS = 120
-# 默认间隔与上下限（2026-04-20 主人要求提频：max 30min → 15min）
-DEFAULT_SLEEP_SEC = 420
-MIN_SLEEP_SEC = 30
-MAX_SLEEP_SEC = 900
-# CLI 启动失败退避
-ERROR_SLEEP_SEC = 120
+# 频率调低（2026-04-21 主人要求保护 Max 额度）：
+# - 默认 10 分钟（原 7 分钟，降 30%）
+# - 最长 25 分钟（原 15 分钟，AI 稳定时允许睡更久）
+# - 最短 60 秒（原 30 秒，急迫时给足响应空间）
+DEFAULT_SLEEP_SEC = 600
+MIN_SLEEP_SEC = 60
+MAX_SLEEP_SEC = 1500
+# CLI 启动失败退避（避免 quota 耗尽后刷屏重试）
+ERROR_SLEEP_SEC = 300
 
 SYSTEM_PROMPT = """你是一位世界级量化交易工程师 + 量化研究员的 AI 化身，
 作为常驻守护进程跑在主人的生产服务器上。每次唤醒都是真 AI 思考。
@@ -396,12 +399,15 @@ DATE=$(date -u +%Y-%m-%d); tail -30 data/logs/daily/$DATE/analysis.jsonl
 
 **一切正常** → 只更新 agent_report.json + 追加 upgrade_plan.md
 
-### Step 5 决定下次唤醒间隔（自适应）
-- 刚 commit 等 watchdog 重启 → 180-300
-- 成交活跃 / Regime 切换 / 持仓浮亏接近止损 → 60-180
-- 平稳震荡无持仓 → 600-1200
-- 市场极静 / 已达日目标 → 1200-1800
-- 未解决异常 → 30-90
+### Step 5 决定下次唤醒间隔（自适应，2026-04-21 保护 Max 额度）
+**原则**：系统稳定时应尽量睡久，省 quota 给真正需要的时刻。
+- 刚 commit 等 watchdog 重启 → 300-600
+- 持仓浮亏接近止损 / Regime 切换 → 120-300
+- 成交活跃（> 5 笔/小时）→ 300-600
+- 平稳震荡 + 持仓管理中 → 600-900
+- 平稳震荡无持仓 → 900-1200
+- 系统非常稳定（已达日目标 / EV 持续正 / 无异常）→ **1200-1500**（上限）
+- 未解决异常 → 60-120（最紧急才 60s，别轻易用）
 
 ## agent_report.json 结构（本轮结束前必须更新）
 ```json
