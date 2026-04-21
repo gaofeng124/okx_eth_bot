@@ -457,8 +457,14 @@ class D:
     GRID_LEVELS = 4                    # 网格档数（向下放 N 档限价买单）
     GRID_ATR_WINDOW = 60               # ATR 计算窗口（tick 数，60≈12s）
     GRID_ATR_MULT = 1.2                # 格宽 = ATR × 此系数（放大以适应低ATR环境）
-    GRID_MIN_SPACING_PCT = 0.0010      # 最小格宽 10bps（大于往返手续费4bps，有净利润空间）
-    GRID_MAX_SPACING_PCT = 0.0050      # 最大格宽 50bps（扩大上限，高波动时仍能成交）
+    # L3-002 增补 2026-04-21（盈亏比救治）：
+    # 近 100 笔实测 round-trip fee ~5.13 bps；25bps spacing → net 20bps 毛利，
+    # 但盈亏比 0.41（avg_win $0.13 / avg_loss $0.33）= 1.6% ROI/日外推，差 $3 目标。
+    # 拉到 32bps min：round-trip 毛利 32bps → net 27bps（+35%），拉宽单笔获利空间；
+    # 配合慢出血 aging（30min+$0.3）把 avg_loss 从 $0.33 压到 $0.25 → 盈亏比预期 0.65-0.70。
+    # ⚠️ 服务器 .env 可能覆盖此默认值；需手动改 .env 的 GRID_MIN_SPACING_PCT 到 0.0032 才生效
+    GRID_MIN_SPACING_PCT = 0.0032      # 最小格宽 32bps
+    GRID_MAX_SPACING_PCT = 0.0060      # 最大格宽 60bps（极端波动时仍能成交）
     GRID_WHOLE_STOP_USDT = 5.0         # 整体止损：浮亏超此值市价平仓（50U本金的10%）
     GRID_DAILY_STOP_USDT = 6.0         # 日亏损上限：超此值当日停止（50U本金的12%，给足调试空间）
     GRID_RECENTER_MULT = 2.0           # 价格偏离 > 2×格宽 时重置中心（原1.5太激进，频繁重置浪费机会）

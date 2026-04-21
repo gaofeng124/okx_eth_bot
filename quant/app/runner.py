@@ -218,6 +218,7 @@ from quant.store import (
     append_runtime_checkpoint,
 )
 from quant.strategy.factory import build_strategy
+from quant.tools.trades_analyzer import TakerFlowAnalyzer
 
 log = get_logger(__name__)
 
@@ -328,6 +329,9 @@ def _swap_strategy_runtime_base() -> dict[str, Any]:
         "mtm_usdt": None,
         "half_kelly_contract_cap": None,
         "half_kelly_debug": None,
+        # Taker Flow Analyzer（OKX WS trades 订阅的 alpha 分析器实例）
+        # grid_pro 读 .aggressor_ratio(60) / .large_trades_recent(60) 做入场 gate
+        "taker_flow": None,
     }
 
 
@@ -3112,6 +3116,20 @@ async def run() -> None:
         bg.append(asyncio.create_task(_lev5_funding_loop(lev5_runtime)))
         bg.append(asyncio.create_task(_lev5_instrument_loop(lev5_runtime)))
         bg.append(asyncio.create_task(_lev5_microstructure_loop(lev5_runtime)))
+
+        # Taker Flow Analyzer（订阅 OKX WS trades 频道，提供 aggressor_ratio 等 alpha 因子）
+        # 供 grid_pro 在 _maybe_open_grid 读 runtime["strategy_runtime"]["taker_flow"] 用作入场 gate
+        try:
+            _taker_flow = TakerFlowAnalyzer(inst_id=INST_ID)
+            _taker_flow._running = True
+            lev5_runtime["taker_flow"] = _taker_flow
+            bg.append(asyncio.create_task(_taker_flow._ws_loop()))
+            log.info(
+                "[lev5][taker-flow] TakerFlowAnalyzer 后台订阅启动: inst=%s window=%ds whale_eth=%.1f",
+                INST_ID, _taker_flow.window_sec, _taker_flow.whale_eth,
+            )
+        except Exception as _tf_exc:  # pragma: no cover - analyzer 启动失败不应阻塞主策略
+            log.warning("[lev5][taker-flow] 启动失败（策略继续运行，gate 会 fallback 放行）: %s", _tf_exc)
     if (
         account_client is not None
         and lev5_runtime is not None

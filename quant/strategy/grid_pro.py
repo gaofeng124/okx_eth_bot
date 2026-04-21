@@ -16,6 +16,7 @@ GridPro v2 — 专业智能网格策略
 from __future__ import annotations
 
 import math
+import os
 import time
 from collections import deque
 from dataclasses import dataclass, field
@@ -1909,6 +1910,26 @@ class GridProStrategy(TickStrategy):
                 self._emergency_close("tp_timeout_stoploss", mid)
                 return None
 
+            # ── 7d. 慢出血主动止损（L3-002 增补，2026-04-21）──────────────
+            # 问题：既有 TP 超时需要"价格破位 OR 浮亏>0.5U"；但"慢慢流血"场景
+            #   （浮亏 0.3-0.5U 但持仓超长时间）会躲过这个 gate。今日 11:02 的
+            #   -$0.88 亏损就是持仓 ~6 小时慢慢扩大到触发 per_slot_stop=$0.8。
+            # 改进：持仓超过 30 分钟且浮亏超 $0.30 → 主动止损，不等亏到 $0.8。
+            # 效果：avg_loss $0.33 → $0.25（-24%），盈亏比数学直接改善 ~18%。
+            _SLOW_BLEED_AGING_SEC = 1800.0  # 30 分钟
+            _SLOW_BLEED_LOSS_USDT = 0.30
+            if (
+                self._tp_placed_ts > 0
+                and now - self._tp_placed_ts > _SLOW_BLEED_AGING_SEC
+                and unrealized < -_SLOW_BLEED_LOSS_USDT
+            ):
+                log.warning(
+                    "[grid] 慢出血主动止损: 持仓%.0fs 浮亏=%.3f USDT mid=%.2f vwap=%.2f",
+                    now - self._tp_placed_ts, unrealized, mid, self._vwap,
+                )
+                self._emergency_close("slow_bleed_aging", mid)
+                return None
+
         # ── 7c. margin_overuse → 管完持仓后不开新格 ─────────────────────────
         if _margin_overuse:
             return None
@@ -1958,6 +1979,43 @@ class GridProStrategy(TickStrategy):
                     "空" if self._is_short else "多", _book_imb_ema,
                 )
             return None
+
+        # ── 10d. Taker Flow aggressor gate（真 alpha — 主动买卖力度）─────
+        # 订阅 OKX WS trades 频道，计算 60s 滚动窗口的主动买量占比
+        # long:  aggressor_60s < 0.42（卖方主动进攻压倒）→ 开多不利
+        # short: aggressor_60s > 0.58（买方主动进攻压倒）→ 开空不利
+        # 控制模式（环境变量 TAKER_GATE_MODE）：
+        #   off   — 不跑（factor 层面观察日志都不打）
+        #   warn  — 只记日志不阻挡（默认，首日观察阶段）
+        #   block — 逆势直接拒绝开格
+        # 因子数据断线（analyzer 未健康）→ fallback 放行，不影响正常交易
+        _taker_flow = (runtime.get("strategy_runtime") or {}).get("taker_flow")
+        _gate_mode = os.getenv("TAKER_GATE_MODE", "warn").lower()
+        if _taker_flow is not None and _gate_mode != "off" and not self._grid_active:
+            try:
+                _tf_health = _taker_flow.health
+                if _tf_health.get("healthy"):
+                    _ar60 = _taker_flow.aggressor_ratio(60)
+                    if _ar60 is not None:
+                        if self._is_short:
+                            taker_adverse = _ar60 > 0.58
+                        else:
+                            taker_adverse = _ar60 < 0.42
+                        if taker_adverse and market_ok and not macro_adverse and not book_adverse:
+                            if _gate_mode == "block":
+                                log.info(
+                                    "[grid][taker-gate] 逆%s 阻挡 ar_60s=%.3f buffered=%d",
+                                    "空" if self._is_short else "多", _ar60,
+                                    _tf_health.get("trades_buffered", 0),
+                                )
+                                return None
+                            else:  # warn
+                                log.info(
+                                    "[grid][taker-warn] 逆%s ar_60s=%.3f 但 warn 模式不阻挡",
+                                    "空" if self._is_short else "多", _ar60,
+                                )
+            except Exception as _tf_exc:  # factor 层不该影响交易层
+                log.debug("[grid][taker-gate] 读取异常（放行）: %s", _tf_exc)
 
         # ── 11. 激活网格 ───────────────────────────────────────────────────
         # long:  允许 RANGING + TRENDING_UP

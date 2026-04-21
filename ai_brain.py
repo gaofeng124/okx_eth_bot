@@ -438,6 +438,43 @@ cd /root/okx_eth_bot && .venv/bin/python notify.py daily
 - RISK_MAX_NOTIONAL_USDT ≤ 120
 - 不可移除 watchdog / systemd / 紧急平仓 / 单仓硬止损
 
+## 🔴 P0 —— 服务器 .env 同步任务（首轮必做，否则新参数不生效）
+
+项目负责人已在代码里更新了默认值 + 接入了 Taker Flow，但 **.env 是 gitignored 不跟代码走**。
+watchdog 重启后你必须在**首轮**执行：
+
+```bash
+cd /root/okx_eth_bot
+# 1. 看当前 .env 的相关参数
+grep -E "^(GRID_MIN_SPACING_PCT|GRID_MAX_SPACING_PCT|GRID_TP_MULT|TAKER_GATE_MODE)=" .env
+
+# 2. 把 spacing 从 25bps 拉到 32bps（盈亏比救治）
+sed -i 's/^GRID_MIN_SPACING_PCT=.*/GRID_MIN_SPACING_PCT=0.0032/' .env
+sed -i 's/^GRID_MAX_SPACING_PCT=.*/GRID_MAX_SPACING_PCT=0.0060/' .env
+
+# 3. 启用 Taker Gate warn 模式（首日只记录不阻挡，AI 观察触发率）
+grep -q "^TAKER_GATE_MODE=" .env && sed -i 's/^TAKER_GATE_MODE=.*/TAKER_GATE_MODE=warn/' .env || echo "TAKER_GATE_MODE=warn" >> .env
+
+# 4. 验证
+grep -E "^(GRID_MIN_SPACING_PCT|GRID_MAX_SPACING_PCT|TAKER_GATE_MODE)=" .env
+```
+
+**为什么这些改动**（主人 2026-04-21 17:09 诊断）：
+- 昨日 79 笔 gross +$1.16 但 fee -$1.11 → **手续费吃掉 95% 毛利**
+- 今日 20 笔 net +$0.44，盈亏比 0.43 → 外推到 24:00 **不达合格 $3**
+- 根因：spacing 25bps 太窄，round-trip 毛利只有 25bps-5bps(fee)=20bps，单笔获利空间小
+
+**新参数的数学（验证）**：
+- spacing 32bps，round-trip 毛利 32bps - 5bps(fee) = **27bps/cycle**（+35% vs 现在）
+- 配合慢出血 aging（30min+\$0.3）：avg_loss \$0.33 → \$0.25（-24%）
+- 预期盈亏比 0.43 → **0.65-0.70**，EV 从 $0.04 → $0.07-0.09/笔
+- 预期日 PnL：15-25 笔 × $0.08 = **$1.2-2.0**，离 $3 仍差 —— 所以 taker gate 必须生效加质量
+
+**观察 2-4h 后再决策**：
+- 若触发率 > 30% 且 PnL 未恶化 → 切 `TAKER_GATE_MODE=block`
+- 若触发率 < 10% → 宽松（拉到 0.55/0.45）或检查 analyzer 健康度
+- 若 PnL 明显好转 → email [里程碑]
+
 ## 🎯 新 alpha 工具已就绪 —— 立即接入 grid_pro（Tier 1 任务）
 
 项目负责人（AI）亲自写完以下真 alpha 工具，已本地 smoke-test 通过：
@@ -462,49 +499,29 @@ a.health                 # {trades_buffered, last_msg_age_sec, healthy}
 ```
 功能：从 OKX fills-history 算 CST 自然日 PnL、对比 tier 目标（186U → 合格 $3 / 优秀 $6）、近 7 日分布、连续亏损告警、lead_commitments 触发条件自动判定。
 
-### 🔥 立即任务：把 trades_analyzer 接入 grid_pro 作第二入场 gate
+### ✅ trades_analyzer 接入 grid_pro —— Step A+B 已完成（项目负责人亲自写入）
 
-当前只有 book_imbalance 一个因子门控；**Taker aggressor 是更直接的 alpha**（散户看不到主动方向）。
+代码层已就绪（下次 commit 即上线）：
+- **Step A**（`quant/app/runner.py`）：启动 `TakerFlowAnalyzer` 后台 WS 订阅，存 `lev5_runtime["taker_flow"]`
+- **Step B**（`quant/strategy/grid_pro.py::on_tick` ~line 1957）：新增 10d aggressor gate
+  - long: `ar_60s < 0.42` → 逆势
+  - short: `ar_60s > 0.58` → 逆势
+  - ENV 开关：`TAKER_GATE_MODE=off|warn|block`（默认 warn 首日观察）
+  - analyzer 不健康 / 断线 → fallback 放行（不影响正常交易）
 
-**分 3 步执行（每步独立 commit，保持可回退）**：
-
-**Step A** — `quant/app/runner.py` 初始化 analyzer（改 ~10 行）：
-```python
-# 在 main() 或策略启动处：
-from quant.tools.trades_analyzer import TakerFlowAnalyzer
-taker_flow = TakerFlowAnalyzer(inst_id=INST_ID)
-asyncio.create_task(taker_flow._ws_loop())  # 或 await taker_flow.start()
-taker_flow._running = True
-runtime["taker_flow"] = taker_flow
+**Step C 观察（AI 本/下几轮）**：
+```bash
+# 观察触发频率
+grep -E "taker-warn|taker-gate|taker-flow" data/logs/grid.log 2>/dev/null | tail -30
+# 或在 analysis.jsonl 里
+tail -100 data/logs/daily/$(date -u +%Y-%m-%d)/system.jsonl | grep -i taker
 ```
 
-**Step B** — `quant/strategy/grid_pro.py::_maybe_open_grid`（line ~1950 book_imb gate 之后）加：
-```python
-# ── 10d. Taker aggressor gate（真 alpha）────────────────────────────
-_taker = getattr(self, "_runtime_ref", {}).get("taker_flow")
-if _taker and _taker.health.get("healthy"):
-    ar = _taker.aggressor_ratio(60)
-    if ar is not None:
-        if self._is_short and ar > 0.58:   # 买方占优，不利做空
-            taker_adverse = True
-        elif not self._is_short and ar < 0.42:  # 卖方占优，不利做多
-            taker_adverse = True
-        else:
-            taker_adverse = False
-        if taker_adverse and os.getenv("TAKER_GATE_MODE", "warn") == "block":
-            log.info("[grid] Taker 逆势 ar_60s=%.2f，跳过开格", ar)
-            return None
-        if taker_adverse:  # warn 模式只记录
-            log.info("[grid][TAKER-WARN] 逆势 ar_60s=%.2f 但未阻挡（warn 模式）", ar)
-```
-
-**Step C** — 观察 warn 模式 1-2h，确认触发率 10-40%（说明 gate 有信号），切 `.env TAKER_GATE_MODE=block`，再观察 1 日 PnL 无恶化 → email [里程碑]。
-
-**风险控制**：
-- Step A/B 在**同一轮**完成并 commit（避免 analyzer 启动但无人读）
-- Step B 默认 TAKER_GATE_MODE=warn（不阻挡）
-- analyzer 断线时（health.healthy=False）fallback 放行（不阻塞正常交易）
-- 每轮只改 1-2 个文件，每步独立 commit
+**触发率判读**：
+- 连续 2h 0% 触发 → analyzer 可能没订阅到 trades（检查 log `TakerFlowAnalyzer 后台订阅启动`）
+- 触发率 10-40% → 健康，信号质量 OK
+- 触发率 > 50% → 阈值太宽松，收紧到 0.40/0.60
+- PnL 明显好转 → 切 `TAKER_GATE_MODE=block` + 发 email [里程碑]
 
 ### 📧 每日 CST 23:00 必发 daily_health 邮件
 已写工具，**本轮用 crontab 注册**（Linux cron，不需要 systemd 权限）：
