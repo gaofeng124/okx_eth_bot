@@ -452,6 +452,9 @@ class GridProStrategy(TickStrategy):
         # 给 45s 让 TP 自然成交或价格恢复；浮亏 > 1U 则立即止损）
         self._bearish_regime_since: float = 0.0
 
+        # 当前 Regime 缓存（每 tick 更新，供 _update_tp / _maybe_trail_tp 使用）
+        self._current_regime: Regime = Regime.RANGING
+
         # 恐贪指数缓存（每小时更新；FGI < 25 极度恐慌时在 _place_grid 减1档）
         self._fear_greed_index: int   = 50
         self._last_fgi_ts:      float = 0.0
@@ -1196,6 +1199,7 @@ class GridProStrategy(TickStrategy):
         """取消旧 TP，以当前 VWAP + 格宽重新挂单。
         long:  TP 在 VWAP 上方（+spacing*mult）
         short: TP 在 VWAP 下方（-spacing*mult）
+        RANGING 模式下 tp_mult × 0.8，缩短 TP 距离提升成交率。
         """
         if self._total_held <= 0:
             return
@@ -1203,7 +1207,9 @@ class GridProStrategy(TickStrategy):
             self._cancel_order(self._tp_order_id)
             self._tp_order_id = ""
         tp_sign = self._tp_spacing_sign()
-        tp = self._vwap * (1.0 + tp_sign * self._grid_spacing * self._tp_mult)
+        # RANGING 模式：TP 距离缩短为 0.8×，提升成交率；趋势模式保留完整 spacing
+        _eff_tp_mult = self._tp_mult * (0.8 if self._current_regime == Regime.RANGING else 1.0)
+        tp = self._vwap * (1.0 + tp_sign * self._grid_spacing * _eff_tp_mult)
         self._tp_price = tp
         oid = self._place_tp(self._total_held, tp)
         if oid:
@@ -1213,8 +1219,10 @@ class GridProStrategy(TickStrategy):
     def _maybe_trail_tp(self, mid: float) -> None:
         """
         TP 追踪：
-          long  → 市场上行 mid > tp + 0.4*spacing，TP 上移到 mid - 0.25*spacing
-          short → 市场下行 mid < tp - 0.4*spacing，TP 下移到 mid + 0.25*spacing
+          long  → 市场上行 mid > tp + 0.4*spacing，TP 上移到 mid - trail_offset*spacing
+          short → 市场下行 mid < tp - 0.4*spacing，TP 下移到 mid + trail_offset*spacing
+        RANGING 模式：trail_offset = 0.15（更紧，快速锁利）
+        趋势模式：trail_offset = 0.25（更宽，追更大利润）
         节流：两次追踪间隔不小于 _TP_TRAIL_MIN_INTERVAL（30s），避免频繁 API 调用。
         成功追踪后重置 _tp_placed_ts，给TP新的超时窗口（顺势行情中不应过早止损）。
         """
@@ -1224,14 +1232,16 @@ class GridProStrategy(TickStrategy):
         if now - self._last_tp_trail_ts < self._TP_TRAIL_MIN_INTERVAL:
             return  # 节流：避免每个 tick 都 cancel/replace TP 单
         spacing_abs = self._grid_spacing * self._vwap
+        # RANGING 模式：追踪步长缩短，快速锁住利润；趋势模式：步长较大，追更多利润
+        _trail_offset = 0.15 if self._current_regime == Regime.RANGING else 0.25
 
         if self._is_short:
             # short：市场继续下跌时向下追踪 TP，锁住更多空头利润
             if mid < self._tp_price - spacing_abs * 0.4:
-                new_tp = mid + spacing_abs * 0.25
+                new_tp = mid + spacing_abs * _trail_offset
                 log.info(
-                    "[grid] TP 追踪下调（short）：mid=%.2f < tp=%.2f - 0.4格，新TP=%.2f",
-                    mid, self._tp_price, new_tp,
+                    "[grid] TP 追踪下调（short）：mid=%.2f < tp=%.2f - 0.4格，新TP=%.2f [offset=%.2f]",
+                    mid, self._tp_price, new_tp, _trail_offset,
                 )
                 if new_tp < self._tp_price:
                     self._cancel_order(self._tp_order_id)
@@ -1245,10 +1255,10 @@ class GridProStrategy(TickStrategy):
         else:
             # long：市场继续上涨时向上追踪 TP
             if mid > self._tp_price + spacing_abs * 0.4:
-                new_tp = mid - spacing_abs * 0.25
+                new_tp = mid - spacing_abs * _trail_offset
                 log.info(
-                    "[grid] TP 追踪上调：mid=%.2f > tp=%.2f + 0.4格，新TP=%.2f",
-                    mid, self._tp_price, new_tp,
+                    "[grid] TP 追踪上调：mid=%.2f > tp=%.2f + 0.4格，新TP=%.2f [offset=%.2f]",
+                    mid, self._tp_price, new_tp, _trail_offset,
                 )
                 if new_tp > self._tp_price:
                     self._cancel_order(self._tp_order_id)
@@ -1761,6 +1771,7 @@ class GridProStrategy(TickStrategy):
             "trend_down": (ema_f - ema_s) / ema_s < -0.00030 if ema_s > 0 else False,
         }
         regime = self._regime.update(feat, now)
+        self._current_regime = regime  # 供 _update_tp / _maybe_trail_tp 读取
 
         # 定期状态日志
         self._log_status(mid, regime, now)
