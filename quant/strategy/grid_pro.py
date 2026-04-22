@@ -457,6 +457,8 @@ class GridProStrategy(TickStrategy):
         # 分 Regime 的 TP 利润 EWMA：RANGING 和 TRENDING 市场利润特征不同，混合会稀释信号
         self._tp_profits_ranging:  deque[tuple[float, float]] = deque(maxlen=20)  # (ts, profit_spacings)
         self._tp_profits_trending: deque[tuple[float, float]] = deque(maxlen=20)
+        # ATR 基线：慢速 EMA（α=0.05）追踪"正常"格宽水平，供 _update_tp 做动态 TP 距离缩放
+        self._atr_baseline: float = 0.0
         self._emergency_closing: bool = False
 
         # 止损计数（1h 窗口）
@@ -1152,6 +1154,12 @@ class GridProStrategy(TickStrategy):
 
         spacing = self._vol.spacing_pct(self._atr_mult, self._min_sp, self._max_sp)
 
+        # ATR 基线慢速 EMA 更新（α=0.05；纯 ATR 格宽，FGI/趋势调整前）
+        if self._atr_baseline <= 0.0:
+            self._atr_baseline = spacing
+        else:
+            self._atr_baseline = 0.05 * spacing + 0.95 * self._atr_baseline
+
         # 资金费率逆风检测：
         #   long:  funding < -0.0003（空头溢价）→ 不利
         #   short: funding > +0.0003（多头溢价）→ 不利
@@ -1288,6 +1296,14 @@ class GridProStrategy(TickStrategy):
         tp_sign = self._tp_spacing_sign()
         # RANGING 模式：TP 距离缩短为 0.8×，提升成交率；趋势模式保留完整 spacing
         _eff_tp_mult = self._tp_mult * (0.8 if self._current_regime == Regime.RANGING else 1.0)
+        # ATR 联动：当前格宽高于基线→延伸 TP（波动大，价格走得远）；低于基线→收紧 TP（波动小，贴近成交）
+        if self._atr_baseline > 0.0 and self._grid_spacing > 0.0:
+            _atr_ratio = max(0.8, min(1.3, self._grid_spacing / self._atr_baseline))
+            _eff_tp_mult = max(0.4, min(2.0, _eff_tp_mult * _atr_ratio))
+            log.debug(
+                "[grid] ATR联动 TP: spacing=%.5f baseline=%.5f ratio=%.3f eff_mult=%.3f",
+                self._grid_spacing, self._atr_baseline, _atr_ratio, _eff_tp_mult,
+            )
         tp = self._vwap * (1.0 + tp_sign * self._grid_spacing * _eff_tp_mult)
         self._tp_price = tp
         oid = self._place_tp(self._total_held, tp)

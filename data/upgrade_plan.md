@@ -1,48 +1,48 @@
 # ETH量化系统升级计划
 
-## 本次（2026-04-22 第二十四轮）完成
+## 本次（2026-04-22 第二十五轮）完成
 
-### grid_pro.py：分Regime的EWMA双桶
+### grid_pro.py：ATR 基线动态止盈（_eff_tp_mult × atr_ratio）
 
 **背景：**
-第22~23轮实现了 EWMA 时间衰减 + 冷启动恢复，但 RANGING 和 TRENDING 共享同一个
-`_tp_fill_profits` deque。问题：震荡行情 profit_spacings ≈ 0.3~0.6，趋势行情 ≈ 0.8~1.5，
-混合后 EWMA 均值被稀释，导致：
-- 震荡时均值被趋势拉高 → adaptive trigger 偏宽 → 锁利不足
-- 趋势时均值被震荡压低 → adaptive trigger 偏窄 → 过早退出利润延伸
+第24轮实现了分Regime双桶EWMA，使TP自适应在RANGING/TRENDING市场中各自独立工作。
+但 `_eff_tp_mult` 的值对"当前波动率是否高于历史正常水平"无感知：
+- 高波动行情（ETH急拉/急跌时 ATR 是平时3×）：TP目标过近，只捕获了价格延伸的一小段
+- 低波动静市（ATR 是平时0.5×）：TP目标过远，价格根本走不到，TP超时/不成交
 
 **改动：**
 
-1. **`_tp_profits_ranging` / `_tp_profits_trending`** 替代 `_tp_fill_profits`
-   - 各 maxlen=20，合计最多40条历史
-   - `_tp_current_bucket` property 按 `self._current_regime` 路由
+1. **`_atr_baseline: float = 0.0`** 新增状态变量
+   - 慢速 EMA（α=0.05，≈20次_place_grid更新后趋稳）
+   - 冷启动：首次_place_grid时直接初始化为当前spacing（安全）
 
-2. **`_ewma_profit_avg()`** 改用 `self._tp_current_bucket`
-   - 同一Regime内部的EWMA，信号纯净
+2. **`_place_grid` 中更新基线**（在raw spacing计算后、FGI/趋势调整前）
+   - `_atr_baseline = 0.05*spacing + 0.95*_atr_baseline`
+   - 追踪"正常格宽"，不受单次FGI/趋势调整污染
 
-3. **fill_tp 写入** 改为 `self._tp_current_bucket.append(...)`
-   - `record_analysis("fill_tp", ..., regime=self._current_regime.value)` 写入日志
-
-4. **`_replay_tp_history()`** 按日志 `regime` 字段分流
-   - 旧格式无 `regime` 字段时默认归入 RANGING bucket（向后兼容）
-   - 取最近40条（两桶各最多20），日志分别报告 ranging/trending 可用条数
-
-5. **debug日志** 新增 `regime=` 字段，便于追踪自适应在哪个制度生效
+3. **`_update_tp` 中应用 ATR 联动**
+   - `_atr_ratio = clamp(self._grid_spacing / _atr_baseline, 0.8, 1.3)`
+   - `_eff_tp_mult = clamp(_eff_tp_mult * _atr_ratio, 0.4, 2.0)`
+   - 高波动（ratio=1.3）：TP延伸30%，捕获更多价格延伸
+   - 低波动（ratio=0.8）：TP收紧20%，提高静市成交率
 
 **效果预期：**
-- RANGING 制度：EWMA 只看震荡行情成交，trigger/offset 响应震荡节奏
-- TRENDING 制度：EWMA 只看趋势行情成交，trigger/offset 响应趋势延伸
-- 两个制度冷启动各需 ≥5 条，初期冷启动期无自适应（正常行为）
+- 高ATR时：原来1.0×spacing的TP → 1.3×spacing（更多利润）
+- 低ATR时：原来0.8×spacing的RANGING TP → 0.64×spacing（更易成交）
+- 与分Regime EWMA叠加：两层自适应协同工作
 
 ---
 
 ## 历史完成
 
+### 第二十四轮（2026-04-22）
+- [x] grid_pro.py: 分Regime EWMA双桶（_tp_profits_ranging/_tp_profits_trending）
+
 ### 第二十三轮（2026-04-22）
-- [x] grid_pro.py: _replay_tp_history() — 重启从日志恢复TP历史，EWMA无冷启动死区
+- [x] grid_pro.py: _replay_tp_history() — 重启从日志恢复TP历史
 
 ### 第二十二轮（2026-04-22）
-- [x] grid_pro.py: EWMA 时间衰减（半衰期30min，maxlen 10→20）
+- [x] grid_pro.py: EWMA 时间衰减（半衰期30min）
 
 ### 第二十一轮（2026-04-22）
 - [x] grid_pro.py: FGI格宽双向调整 + _refresh_funding REST fallback
@@ -55,37 +55,36 @@
 
 ## 待解决问题（按优先级）
 
-- [ ] P2: 验证分Regime桶实际分流
-  - 日志搜索 `冷启动恢复 TP 历史: 找到 X 条，ranging=Y trending=Z`
-  - 若 trending=0 说明近期无趋势行情成交（正常）或旧日志无regime字段（第一天运行正常）
-- [ ] P3: tp_mult 与 ATR 联动的动态止盈
-  - 当前 tp_mult 固定；ATR 高时每格利润空间大，可以提高 tp_mult
-  - 方案：`_eff_tp_mult = self._tp_mult * clamp(atr_ratio, 0.8, 1.3)`
-  - atr_ratio = current_atr / ewma_atr_baseline（20期）
-- [ ] P3: RANGING/TRENDING 的 trigger/offset 上下界独立调参
+- [ ] P3: RANGING/TRENDING的trail trigger/offset上下界独立调参
   - 当前两制度共享 [0.20, 0.50] 和 [0.08, 0.35] 的边界
-  - TRENDING 的上界可以放开至 0.60（更大延伸空间）
+  - TRENDING 的 trigger 上界可放开到 0.60（更大延伸空间）
+  - RANGING 的 offset 下界可收紧到 0.05（贴市价锁利）
+- [ ] P3: _atr_baseline 持久化（重启后恢复，避免冷启动期无ATR联动）
+  - 方案：在 grid_session.json 中存储 _atr_baseline 值
+  - 载入时恢复：`self._atr_baseline = session_data.get("atr_baseline", 0.0)`
+- [ ] P3: 验证ATR联动实际效果
+  - 日志搜索：`ATR联动 TP: spacing=... baseline=... ratio=... eff_mult=...`
+  - ratio应在0.8~1.3之间波动，eff_mult应在0.4~1.6之间
 
 ---
 
 ## 下次优先行动
 
-1. **P3: tp_mult 与 ATR 联动**
-   - 在 GridProStrategy 新增 `_atr_baseline: float`（初始化为0，首次由20期均值设置）
-   - 每次 `_place_grid` 时：`atr_ratio = spacing / _atr_baseline`（近似ATR比率）
-   - `_eff_tp_mult *= clamp(atr_ratio, 0.8, 1.3)`
-   - 边界：tp_mult 最终值不超过 [0.4, 2.0]
+1. **P3: RANGING trigger/offset 独立上下界**
+   - `_adaptive_trail_trigger` 中：RANGING 上界 0.50，TRENDING 上界 0.60
+   - `_adaptive_trail_offset` 中：RANGING 下界 0.05，TRENDING 下界 0.10
+   - 避免RANGING行情中trail trigger被拉到TRENDING级别的宽松值
 
 ---
 
 ## 系统评估
 - **策略有效性**：9/10
-  - 24轮迭代；全P0/P1已解决
-  - 自适应层：分Regime EWMA（第24轮）+ 时间衰减（第22轮）+ 冷启动恢复（第23轮）
+  - 25轮迭代；全P0/P1已解决
+  - 自适应层：ATR联动TP（第25轮）+ 分Regime EWMA（第24轮）+ 时间衰减（第22轮）+ 冷启动恢复（第23轮）
   - FGI感知：三维度（档位-1/+1 + 格宽×0.8/×1.2）
   - 资金费率：runtime优先 + REST fallback
 - **主要风险点**：
   1. 外部API网络受限（无法验证实盘运行状态）
-  2. 分Regime桶初期均<5条：自适应不激活，完全依赖固定base值（安全但无动态调整）
+  2. _atr_baseline冷启动期（首次运行无历史，但已安全处理）
   3. 无实盘日志可验证，改进效果依赖代码分析
-- **累计运行轮次**：24
+- **累计运行轮次**：25

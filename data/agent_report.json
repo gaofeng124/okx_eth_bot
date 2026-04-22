@@ -1,19 +1,19 @@
 {
-  "ran_at": "2026-04-22 08:00 UTC",
-  "eth_price": "N/A (API不可达)",
+  "ran_at": "2026-04-22 09:00 UTC",
+  "eth_price": "N/A (API受限)",
   "eth_24h_change_pct": "N/A",
-  "fear_greed_index": "N/A (API不可达)",
-  "funding_rate": "N/A (API不可达)",
-  "market_summary": "外部API网络不可达（环境限制），市场数据无法获取。根据历史轨迹维持震荡偏谨慎判断，按计划执行P2代码升级。",
-  "decision": "实现分Regime的EWMA：_tp_profits_ranging/_tp_profits_trending双桶，按当前Regime路由TP利润记录，EWMA信号不再跨Regime混合稀释",
+  "fear_greed_index": "N/A (API受限)",
+  "funding_rate": "N/A (API受限)",
+  "market_summary": "市场API在沙箱环境中不可达，无法获取实时数据。策略代码按计划迭代升级。",
+  "decision": "实现ATR基线动态止盈：_atr_baseline慢速EMA追踪正常格宽，_update_tp中按atr_ratio=[0.8,1.3]缩放_eff_tp_mult，波动高时TP更远，波动低时TP更近",
   "param_changes": [],
   "code_changes": [
     {
       "file": "quant/strategy/grid_pro.py",
-      "summary": "将单一_tp_fill_profits deque拆分为_tp_profits_ranging/_tp_profits_trending两个分Regime桶；新增_tp_current_bucket property；_ewma_profit_avg()/_replay_tp_history()/_adaptive_trail_trigger/_adaptive_trail_offset全部适配；fill_tp record_analysis写入regime字段"
+      "summary": "新增_atr_baseline状态变量（慢速EMA α=0.05）；_place_grid每次更新基线；_update_tp按当前spacing/baseline的比率缩放_eff_tp_mult，范围[0.8,1.3]，最终mult夹在[0.4,2.0]"
     }
   ],
-  "risk_notes": "网络隔离环境无法验证实盘运行，所有改进依赖代码逻辑分析；分Regime桶冷启动期需要各bucket≥5条才激活自适应",
-  "next_focus": "P3: tp_mult与ATR联动的动态止盈（根据波动率实时调整每格利润目标倍数）",
-  "round_number": "24"
+  "risk_notes": "ATR联动初期_atr_baseline冷启动（首次_place_grid调用时直接设为当前spacing），此前_eff_tp_mult无联动调整（安全）。α=0.05意味着基线约20次更新后才稳定。",
+  "next_focus": "P3：RANGING/TRENDING的trail trigger/offset上下界独立调参；或测试_atr_baseline冷启动行为",
+  "round_number": "25"
 }
