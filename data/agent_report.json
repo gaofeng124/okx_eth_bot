@@ -1,19 +1,19 @@
 {
-  "ran_at": "2026-04-22 06:00 UTC",
+  "ran_at": "2026-04-22 07:00 UTC",
   "eth_price": "N/A (API不可达)",
   "eth_24h_change_pct": "N/A",
-  "fear_greed_index": "N/A (API不可达，缓存默认50中性)",
-  "funding_rate": "N/A (API不可达，缓存0.0)",
-  "market_summary": "外部API均不可达（OKX、alternative.me），无法获取实时数据。系统运行在默认参数下：FGI=50中性、资金费率=0.0。待网络恢复后策略将自动拉取最新数据。",
-  "decision": "升级_tp_fill_profits为EWMA时间衰减加权（半衰期30min），近期TP成交权重指数更高；同步修复_adaptive_trail_offset使用新信号源",
+  "fear_greed_index": "N/A (API不可达)",
+  "funding_rate": "N/A (API不可达)",
+  "market_summary": "外部API网络受限，无法获取实时市场数据。代码审计显示策略逻辑运行正常，本轮专注P1冷启动恢复功能实现。",
+  "decision": "实现_replay_tp_history()：重启后从analysis.jsonl重播TP成交历史，EWMA自适应不再需要等待5次新成交冷启动",
   "param_changes": [],
   "code_changes": [
     {
       "file": "quant/strategy/grid_pro.py",
-      "summary": "新增_ewma_profit_avg方法（时间衰减EWMA，半衰期1800s）；_tp_fill_profits改存(ts,value)元组(maxlen=20)；_adaptive_trail_trigger/_adaptive_trail_offset均改用_ewma_profit_avg替代简单均值"
+      "summary": "新增_replay_tp_history()方法+存储self._data_dir+fill_tp日志增加profit_spacings字段+__init__末尾调用冷启动恢复"
     }
   ],
-  "risk_notes": "外部API不可达时FGI和资金费率依赖缓存值（默认中性），极端行情下自适应失效。adaptive系列仍需5次真实TP成交才激活。",
-  "next_focus": "验证analysis.jsonl中fill_tp事件是否正确写入；考虑为_tp_fill_profits添加持久化（重启后不丢失历史）",
-  "round_number": "22"
+  "risk_notes": "外部API网络受限导致无法获取实盘数据；_replay_tp_history仅恢复含profit_spacings字段的新格式日志，旧日志静默跳过",
+  "next_focus": "验证冷启动恢复日志输出('[grid] 冷启动恢复 TP 历史')；分regime的EWMA（RANGING/TRENDING分别维护）",
+  "round_number": "23"
 }

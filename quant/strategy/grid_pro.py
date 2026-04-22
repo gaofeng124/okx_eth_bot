@@ -435,6 +435,7 @@ class GridProStrategy(TickStrategy):
             persist_file="grid_session.json",
         )
         self._tracker.load()
+        self._data_dir = data_dir  # 冷启动 TP 历史恢复用
 
         # EMA（Regime 特征）
         self._ema_fast  = StreamingEMA(alpha=0.12)
@@ -493,6 +494,9 @@ class GridProStrategy(TickStrategy):
 
         # 启动对账
         self._boot_reconcile()
+
+        # 冷启动 TP 历史恢复（使 EWMA 自适应重启后立即可用，无需等待5次新成交）
+        self._replay_tp_history()
 
         # 关键风控配置一次性打印（便于日志核对）
         log.info(
@@ -1384,6 +1388,59 @@ class GridProStrategy(TickStrategy):
             total_wv += w * v
         return total_wv / total_w if total_w > 0.0 else None
 
+    def _replay_tp_history(self) -> None:
+        """重启后从 analysis.jsonl 重播最近 TP 成交，使 EWMA 自适应立即可用。
+
+        读取今日与昨日的 analysis.jsonl，筛选含 profit_spacings 的 fill_tp 事件，
+        按时间戳排序后写入 _tp_fill_profits（最多 maxlen=20）。
+        只有 profit_spacings 字段存在时才纳入（旧日志无此字段时静默跳过）。
+        """
+        import json as _json
+        from datetime import date as _date, datetime as _dt, timedelta as _td
+        from pathlib import Path as _Path
+
+        data_dir = _Path(self._data_dir)
+        today = _date.today()
+        records: list[tuple[float, float]] = []
+        for d in (today, today - _td(days=1)):
+            path = data_dir / "logs" / "daily" / d.isoformat() / "analysis.jsonl"
+            if not path.exists():
+                continue
+            try:
+                with path.open(encoding="utf-8") as fh:
+                    for line in fh:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            rec = _json.loads(line)
+                        except Exception:
+                            continue
+                        if rec.get("event") != "fill_tp":
+                            continue
+                        ps = rec.get("profit_spacings")
+                        ts_wall = rec.get("ts_wall", "")
+                        if ps is None or not ts_wall:
+                            continue
+                        try:
+                            ts = _dt.fromisoformat(ts_wall).timestamp()
+                        except Exception:
+                            continue
+                        records.append((float(ts), float(ps)))
+            except Exception:
+                pass
+
+        if not records:
+            return
+        records.sort(key=lambda x: x[0])
+        for ts, ps in records[-20:]:
+            self._tp_fill_profits.append((ts, ps))
+        log.info(
+            "[grid] 冷启动恢复 TP 历史: 找到 %d 条，恢复 %d 条，EWMA%s",
+            len(records), len(self._tp_fill_profits),
+            " 即时可用" if len(self._tp_fill_profits) >= 5 else " 待更多成交(需5条)",
+        )
+
     def _adaptive_trail_trigger(self, base_trigger: float) -> float:
         """根据近期TP成交利润（格宽倍数，EWMA加权）动态调整追踪触发门槛。
 
@@ -1623,10 +1680,11 @@ class GridProStrategy(TickStrategy):
                         exit_reason="tp",
                     )
             # 记录本次 TP 利润（格宽倍数 + 时间戳），供 _adaptive_trail_trigger EWMA 使用
+            _ps: float | None = None
             if self._grid_spacing > 0 and self._vwap > 0:
                 spacing_abs = self._grid_spacing * self._vwap
-                profit_spacings = abs(fill_px - self._vwap) / spacing_abs
-                self._tp_fill_profits.append((time.time(), profit_spacings))
+                _ps = abs(fill_px - self._vwap) / spacing_abs
+                self._tp_fill_profits.append((time.time(), _ps))
             log.info(
                 "[grid] TP 成交 @%.2f sz=%.1f net=%.4f USDT | 日累计=%.4f USDT",
                 fill_px, actual_fill, total_net, self._pnl.realized,
@@ -1640,6 +1698,7 @@ class GridProStrategy(TickStrategy):
                     net_pnl_usdt=total_net,
                     daily_pnl_realized=self._pnl.realized,
                     entry_vwap=self._vwap,
+                    profit_spacings=_ps,
                 )
             except Exception:
                 pass
