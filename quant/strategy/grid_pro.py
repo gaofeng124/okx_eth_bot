@@ -472,6 +472,10 @@ class GridProStrategy(TickStrategy):
         self._fear_greed_index: int   = 50
         self._last_fgi_ts:      float = 0.0
 
+        # 【2026-04-22 改进 1-3】交易节流 + 价格位置 + 波动自适应
+        self._recent_entries_ts: deque[float] = deque(maxlen=10)  # 最近开仓时间
+        self._price_1h_cache = {"ts": 0.0, "hi": 0.0, "lo": 0.0}  # 1h 高低缓存
+
         # Phase 4 趋势日守卫（主人 2026-04-21 22:15 批准 B 激进版时要求）
         # 每 10min 评估近 4h K 线 delta：若 |delta| > 1.5% → 自动降回 Phase 3
         # 原因：90% 利用率 + 趋势日 = 必爆仓；grid 策略依赖震荡不是单边
@@ -1195,6 +1199,31 @@ class GridProStrategy(TickStrategy):
         self._active_levels = n_active
         self._grid_active   = True
         placed = 0
+        # 记录开格时间给节流 gate 用（改进 2）
+        self._recent_entries_ts.append(time.time())
+
+        # ── 改进 3 (2026-04-22): 规模自适应波动 ──
+        # 问题：sz=1.0 notional $240，per_slot_stop $0.8 = 0.33% 容忍
+        #      但 ETH ATR 30bps + 冲高回落 50bps 常见 → 每次都击穿
+        # 规则：ATR > 35bps 缩 sz；ATR 越高缩越多
+        _atr_bps = self._vol.atr_short * 10000
+        _sz_scale = 1.0
+        if _atr_bps > 70:
+            _sz_scale = 0.3
+        elif _atr_bps > 50:
+            _sz_scale = 0.5
+        elif _atr_bps > 35:
+            _sz_scale = 0.7
+        if _sz_scale < 1.0:
+            log.info(
+                "[grid][atr-scale] ATR=%.1fbps 偏高，仓位缩 ×%.1f（防高波动击穿止损）",
+                _atr_bps, _sz_scale,
+            )
+        # 动态调整 slots 的 contracts（仅对 EMPTY 的 slot 生效，不动 HOLDING）
+        _effective_contracts = self._contracts_per_slot * _sz_scale
+        for s in self._slots:
+            if s.state == _S.EMPTY:
+                s.contracts = _effective_contracts
 
         # 入场方向乘子：long 在下方(-1)，short 在上方(+1)
         dir_sign = self._grid_spacing_sign()
@@ -2252,6 +2281,39 @@ class GridProStrategy(TickStrategy):
         _fr_norm = max(-1.0, min(1.0, -_fr / 0.0002))  # 2bps funding 算 full（反向）
         _dir_score += _fr_norm * 0.10
 
+        # S7（权重 0.20，2026-04-22 新增）：价格位置因子
+        # 问题：13:31 / 13:52 两笔 sz=1.0 都在 ETH 刚破新高时买入，1-2min 回落被砸
+        # 逻辑：靠近近 1h 高点不利做多（追顶），靠近低点不利做空（追底）
+        # 每 5 min 更新 1h 高低缓存（15m × 4 根 = 1h）
+        if now - self._price_1h_cache["ts"] > 300:
+            try:
+                import urllib.request as _ur, json as _json
+                with _ur.urlopen(
+                    "https://www.okx.com/api/v5/market/candles"
+                    "?instId=ETH-USDT-SWAP&bar=15m&limit=4", timeout=5
+                ) as r:
+                    _c = _json.loads(r.read())["data"]
+                    self._price_1h_cache["hi"] = max(float(c[2]) for c in _c)
+                    self._price_1h_cache["lo"] = min(float(c[3]) for c in _c)
+                    self._price_1h_cache["ts"] = now
+            except Exception:
+                pass
+        _hi_1h = self._price_1h_cache["hi"]
+        _lo_1h = self._price_1h_cache["lo"]
+        if _hi_1h > 0 and _lo_1h > 0:
+            # 距高 / 距低（bps）
+            _dist_hi = (_hi_1h - mid) / mid * 10000 if _hi_1h > mid else 0
+            _dist_lo = (mid - _lo_1h) / mid * 10000 if mid > _lo_1h else 0
+            # 距高 < 10bps（≈0.1%）→ 追顶风险，贡献 -0.5 对 long
+            # 距低 < 10bps → 追底风险，贡献 +0.5（反向）对 short
+            _pos_signal = 0.0
+            if _dist_hi < 10 and _dist_hi > 0:  # 非常接近高点
+                _pos_signal = -(1.0 - _dist_hi / 10)  # 距高 0bps → -1，距高 10bps → 0
+            elif _dist_lo < 10 and _dist_lo > 0:
+                _pos_signal = (1.0 - _dist_lo / 10)   # 距低 0bps → +1
+            # 权重 0.20 是最大的单权重，确保追顶追底时此因子能主导
+            _dir_score += _pos_signal * 0.20
+
         # 方向匹配检查：strategy direction 与 score 符号一致才放行
         if not self._grid_active:
             my_dir_sign = -1.0 if self._is_short else +1.0
@@ -2259,10 +2321,22 @@ class GridProStrategy(TickStrategy):
             if abs(_dir_score) > 0.15 and my_dir_sign * _dir_score < 0:
                 if market_ok and not macro_adverse and not book_adverse:
                     log.info(
-                        "[grid][dir-score] %s 实时逆势 score=%.3f（权重: imb+aggr+cvd+ema+mb+fr），跳过开格",
+                        "[grid][dir-score] %s 实时逆势 score=%.3f（7 维 含价格位置），跳过开格",
                         "空" if self._is_short else "多", _dir_score,
                     )
                 return None
+
+        # ── 10f. 开仓节流 gate（2026-04-22 改进 2）
+        # 问题：13:18:19-13:18:29 10 秒内连续 3 次 buy，堆仓到 0.9 张（触发 sell 勉强盈利）
+        # 规则：2 分钟内开仓次数 > 2 → 拒绝第 3 次
+        while self._recent_entries_ts and now - self._recent_entries_ts[0] > 120:
+            self._recent_entries_ts.popleft()
+        if len(self._recent_entries_ts) >= 2 and not self._grid_active:
+            log.info(
+                "[grid][throttle] 近 2min 已开 %d 次仓，节流跳过（防过度交易）",
+                len(self._recent_entries_ts),
+            )
+            return None
 
         # ── 11. 激活网格 ───────────────────────────────────────────────────
         # long:  允许 RANGING + TRENDING_UP
