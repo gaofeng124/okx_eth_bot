@@ -2184,6 +2184,46 @@ class GridProStrategy(TickStrategy):
             except Exception as _tf_exc:  # factor 层不该影响交易层
                 log.debug("[grid][taker-gate] 读取异常（放行）: %s", _tf_exc)
 
+        # ── 10e. 实时方向票决 gate（2026-04-22 主人要求：每次下单前实时判断方向）
+        # 3 信号内存投票（用 strategy 已有的 EMA/funding/macro_bias，毫秒级响应）：
+        #   信号1: macro_bias（mid vs 5min EMA，已 feat 里）
+        #   信号2: funding rate（缓存值）
+        #   信号3: EMA fast vs slow（ema_f/ema_s）
+        # 如果当前 direction 在实时投票中"弱势" → 跳过本次开格（避免买涨挨跌/买跌挨涨）
+        # 不是切换 direction（配置层由 Regime Router 5min 层处理），是"不下错方向的单"
+        _long_votes = 0
+        _short_votes = 0
+        # 信号1: macro_bias
+        _mb = feat["macro_bias"]
+        if _mb > 0.0010:
+            _long_votes += 1
+        elif _mb < -0.0010:
+            _short_votes += 1
+        # 信号2: funding rate（> 0 表示多头贵 → 偏空信号；< 0 表示空头贵 → 偏多信号）
+        _fr = self._funding_rate or 0.0
+        if _fr < -0.00005:
+            _long_votes += 1
+        elif _fr > 0.00005:
+            _short_votes += 1
+        # 信号3: ema_fast vs ema_slow
+        if ema_s > 0:
+            _ema_ratio = ema_f / ema_s
+            if _ema_ratio > 1.0005:
+                _long_votes += 1
+            elif _ema_ratio < 0.9995:
+                _short_votes += 1
+        # 票决：当前 direction 是弱势方 → 跳过
+        if not self._grid_active:
+            my_votes = _short_votes if self._is_short else _long_votes
+            opp_votes = _long_votes if self._is_short else _short_votes
+            if opp_votes > my_votes:
+                if market_ok and not macro_adverse and not book_adverse:
+                    log.info(
+                        "[grid][realtime-dir] %s 实时逆势 long=%d short=%d，跳过开格（保护）",
+                        "空" if self._is_short else "多", _long_votes, _short_votes,
+                    )
+                return None
+
         # ── 11. 激活网格 ───────────────────────────────────────────────────
         # long:  允许 RANGING + TRENDING_UP
         # short: 允许 RANGING + TRENDING_DOWN
@@ -2194,7 +2234,11 @@ class GridProStrategy(TickStrategy):
             return None
 
         # ── 12. 补充空置槽位 ───────────────────────────────────────────────
-        if self._grid_active and market_ok:
+        # 实时方向 gate 也应用到补仓：如果即时市场转向就不补新档位
+        my_v = _short_votes if self._is_short else _long_votes
+        opp_v = _long_votes if self._is_short else _short_votes
+        _fill_ok_dir = opp_v <= my_v + 1  # 对手领先 2 票才阻止补档
+        if self._grid_active and market_ok and _fill_ok_dir:
             dir_sign = self._grid_spacing_sign()
             for s in self._slots:
                 if (
