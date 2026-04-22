@@ -15,3 +15,4 @@ data/*
 .idea/
 # 辅助脚本 - 本机用
 fix_instructions.py
+!data/whitepaper_draft.md

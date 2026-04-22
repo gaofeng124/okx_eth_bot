@@ -2296,6 +2296,17 @@ class GridProStrategy(TickStrategy):
         except Exception:
             pass
 
+        # 【2026-04-22 主人紧急要求】Circuit Breaker 检查（速率级熔断）
+        # 任一级别触发 → 暂停开新格（不平已有仓位，由 TP/per_slot_stop 处理）
+        try:
+            from quant.tools.circuit_breaker import should_trading_be_blocked
+            _blocked, _reason = should_trading_be_blocked()
+            if _blocked and not self._grid_active:
+                log.info("[grid][circuit-breaker] %s → 暂停开新格", _reason)
+                return None
+        except Exception:
+            pass
+
         # strategy_pool 协调检查
         try:
             from quant.tools.strategy_pool import load_active

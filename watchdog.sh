@@ -102,6 +102,12 @@ restart_system() {
         >> "$PROJECT_DIR/data/logs/signal_attribution.log" 2>&1 &
     log ">>> signal_attribution PID=$!"
 
+    # Circuit Breaker（速率级熔断，主人 2026-04-22 15:20 要求）
+    pkill -f "circuit_breaker" 2>/dev/null || true
+    nohup "$VENV_PYTHON" -m quant.tools.circuit_breaker --daemon \
+        >> "$PROJECT_DIR/data/logs/circuit_breaker.log" 2>&1 &
+    log ">>> circuit_breaker PID=$!"
+
     # 关闭（不启动）：mean_reversion_watcher / funding_arb_watcher / cross_asset_signal
     pkill -f "mean_reversion_watcher" 2>/dev/null || true
     pkill -f "funding_arb_watcher" 2>/dev/null || true
