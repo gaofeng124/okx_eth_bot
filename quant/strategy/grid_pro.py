@@ -2281,47 +2281,22 @@ class GridProStrategy(TickStrategy):
         _fr_norm = max(-1.0, min(1.0, -_fr / 0.0002))  # 2bps funding 算 full（反向）
         _dir_score += _fr_norm * 0.10
 
-        # S8（权重 0.15）：链上净流入（真 alpha）
-        try:
-            from quant.tools.onchain_signal import read_signal_cached
-            _onchain = read_signal_cached()
-            if _onchain and "signal" in _onchain:
-                _dir_score += float(_onchain["signal"]) * 0.15
-        except Exception:
-            pass
-
-        # S9（权重 0.10）：Funding Rate Arbitrage 信号
-        try:
-            from quant.tools.funding_arb_watcher import read_cached as _fa_read
-            _fa = _fa_read()
-            if _fa and "time_weighted_signal" in _fa:
-                _dir_score += float(_fa["time_weighted_signal"]) * 0.10
-        except Exception:
-            pass
-
-        # S10（权重 0.10）：Order Book 微观结构（大单墙 + 整数关口）
+        # 【2026-04-22 奥卡姆剃刀】砍掉未验证信号：
+        #   onchain（24h 频率不匹配日内）、funding_arb（无套利能力）、
+        #   cross_asset（相关性 0.85 无独立 alpha）—— 待 signal_attribution IC>0.1 再启用
+        # 保留：orderbook（实盘验证 book_imb 有效 + spread 异常保护）
         try:
             from quant.tools.orderbook_signal import read_cached as _ob_read
             _ob = _ob_read()
             if _ob and "signal" in _ob:
                 _dir_score += float(_ob["signal"]) * 0.10
-                # Spread 异常 → 拒绝开仓（流动性差）
                 if _ob.get("spread_alert") and not self._grid_active:
                     log.info("[grid][spread-alert] spread=%.1fbps 过宽，跳过开格", _ob.get("spread_bps", 0))
                     return None
         except Exception:
             pass
 
-        # S11（权重 0.10）：Cross-asset（BTC 联动）
-        try:
-            from quant.tools.cross_asset_signal import read_cached as _xa_read
-            _xa = _xa_read()
-            if _xa and "signal" in _xa:
-                _dir_score += float(_xa["signal"]) * 0.10
-        except Exception:
-            pass
-
-        # 新增：strategy_pool 检查（多策略协调）
+        # strategy_pool 协调检查
         try:
             from quant.tools.strategy_pool import load_active
             _pool = load_active()

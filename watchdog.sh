@@ -76,31 +76,37 @@ restart_system() {
         >> "$PROJECT_DIR/data/logs/performance_eval.log" 2>&1 &
     log ">>> performance_eval PID=$!"
 
-    # Phase II 5 项能力扩展（2026-04-22 立刻升级）
+    # 2026-04-22 主人批评后减法：关闭 5 个未验证 daemon（避免复杂性冗余）
+    # 保留理由：
+    #   strategy_pool    → grid_pro 依赖此文件做 regime 判断（保留）
+    #   orderbook_signal → 高频信号，已实盘验证 book_imb 有效（保留）
+    # 关闭理由：
+    #   mean_reversion_watcher → Z>2 触发条件苛刻，从未开仓，耗资源
+    #   funding_arb_watcher    → 单交易所无套利能力，只是监控
+    #   cross_asset_signal     → BTC-ETH 相关性 0.85 无独立 alpha
+    # 这些信号待 signal_attribution.py 数据证明 IC > 0.1 再重新启用
+
     pkill -f "strategy_pool" 2>/dev/null || true
     nohup "$VENV_PYTHON" -m quant.tools.strategy_pool --daemon \
         >> "$PROJECT_DIR/data/logs/strategy_pool.log" 2>&1 &
     log ">>> strategy_pool PID=$!"
-
-    pkill -f "mean_reversion_watcher" 2>/dev/null || true
-    nohup "$VENV_PYTHON" -m quant.tools.mean_reversion_watcher --daemon \
-        >> "$PROJECT_DIR/data/logs/mean_reversion.log" 2>&1 &
-    log ">>> mean_reversion_watcher PID=$!"
-
-    pkill -f "funding_arb_watcher" 2>/dev/null || true
-    nohup "$VENV_PYTHON" -m quant.tools.funding_arb_watcher --daemon \
-        >> "$PROJECT_DIR/data/logs/funding_arb.log" 2>&1 &
-    log ">>> funding_arb_watcher PID=$!"
 
     pkill -f "orderbook_signal" 2>/dev/null || true
     nohup "$VENV_PYTHON" -m quant.tools.orderbook_signal --daemon \
         >> "$PROJECT_DIR/data/logs/orderbook_signal.log" 2>&1 &
     log ">>> orderbook_signal PID=$!"
 
+    # 信号归因采样（持续记录用于 IC 分析）
+    pkill -f "signal_attribution" 2>/dev/null || true
+    nohup "$VENV_PYTHON" -m quant.tools.signal_attribution --daemon \
+        >> "$PROJECT_DIR/data/logs/signal_attribution.log" 2>&1 &
+    log ">>> signal_attribution PID=$!"
+
+    # 关闭（不启动）：mean_reversion_watcher / funding_arb_watcher / cross_asset_signal
+    pkill -f "mean_reversion_watcher" 2>/dev/null || true
+    pkill -f "funding_arb_watcher" 2>/dev/null || true
     pkill -f "cross_asset_signal" 2>/dev/null || true
-    nohup "$VENV_PYTHON" -m quant.tools.cross_asset_signal --daemon \
-        >> "$PROJECT_DIR/data/logs/cross_asset.log" 2>&1 &
-    log ">>> cross_asset_signal PID=$!"
+    log ">>> 已关闭未验证 daemon（等 signal_attribution 数据证明后重启）"
 }
 
 # 确保系统初始运行
