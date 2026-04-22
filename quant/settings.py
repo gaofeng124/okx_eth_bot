@@ -479,17 +479,17 @@ class D:
     GRID_DAILY_TARGET_USDT = 999.0     # 无每日上限——全天持续交易不停止（原1.5U上限是致命缺陷）
     GRID_DRAWDOWN_FROM_PEAK_USDT = 2.0 # 峰值回撤上限（适配 42U 小账户，~5%）
     # 单格张数（ETH-USDT-SWAP ctVal=0.1ETH，lotSz=1，1张=0.1ETH）。
-    # 原设 0.2 但 lot_sz=1 时 _round_sz(0.2)=1，实际始终下 1 张；改为 1 消除歧义。
+    # 2026-04-22 适配 186U 账户：默认 1.0 张（Phase 1 基线，每格 ~$232 notional）
     GRID_CONTRACTS_PER_SLOT = 1.0
-    # 单仓硬止损：任一 HOLDING 槽位浮亏超此值立即市价平该仓（不等整体止损）
-    GRID_PER_SLOT_STOP_USDT = 1.5
+    # 单仓硬止损：Q4 盈亏比救治 2026-04-22 $1.5→$1.0（更早止损，预期 avg_loss -30%）
+    GRID_PER_SLOT_STOP_USDT = 1.0
     # 【L2 做空】2026-04-20 新增
     # GRID_DIRECTION: "long" / "short" — 决定当前策略方向（一次只一个方向，不对冲）
-    #  默认 "long" 保持向后兼容；改为 "short" 时策略完全镜像做空
+    #  默认 "long"；Regime Router 可自动切换
     GRID_DIRECTION = "long"
-    # 做空时每格张数（比 long 保守：0.1 张 = 0.01 ETH ≈ 23U 名义）
-    # L2 首次上线保守起步，验证一周后再与 long 对齐
-    GRID_CONTRACTS_PER_SLOT_SHORT = 0.1
+    # 做空时每格张数：2026-04-22 Phase 1 基线 1.0（配合 186U 账户）
+    # L10-004 教训：代码默认从 0.1 提到 1.0，即使 daemon 误删 .env 此行也不会回 0.1
+    GRID_CONTRACTS_PER_SLOT_SHORT = 1.0
     # TP 距离倍率（AI R78 引入）：实际 TP = spacing × tp_mult
     GRID_TP_MULT = 1.5
 
