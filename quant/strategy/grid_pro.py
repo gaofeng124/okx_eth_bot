@@ -2389,9 +2389,18 @@ class GridProStrategy(TickStrategy):
         # ── 12. 补充空置槽位 ───────────────────────────────────────────────
         # 方向评分 gate 也应用到补仓：强烈逆势时不补新档
         my_dir_sign_fill = -1.0 if self._is_short else +1.0
-        # 补档比开格宽容些：|score| > 0.30 且反向才阻止
         _fill_ok_dir = not (abs(_dir_score) > 0.30 and my_dir_sign_fill * _dir_score < 0)
-        if self._grid_active and market_ok and _fill_ok_dir:
+        # 【2026-04-22 15:54 Bug 修复】补仓也要节流
+        # 问题：15:18:58 同一秒 2 笔 buy → _place_grid 节流失效
+        # 原因：_place_grid 节流只管"首次开格"，补仓走 slot fill 路径不受控
+        # 修复：补仓前检查 _recent_entries_ts（过去 60s 补仓 >= 2 次 → 暂停补）
+        _fill_throttle_ok = True
+        _now = time.time()
+        while self._recent_entries_ts and _now - self._recent_entries_ts[0] > 60:
+            self._recent_entries_ts.popleft()
+        if len(self._recent_entries_ts) >= 2:
+            _fill_throttle_ok = False
+        if self._grid_active and market_ok and _fill_ok_dir and _fill_throttle_ok:
             dir_sign = self._grid_spacing_sign()
             for s in self._slots:
                 if (
@@ -2422,6 +2431,8 @@ class GridProStrategy(TickStrategy):
                     s.target_price = calc_px
                     s.last_attempt_ts = now
                     self._place_entry(s, now)
+                    # 记录补仓时间给节流 gate（修复 15:18:58 同秒双 fill bug）
+                    self._recent_entries_ts.append(now)
 
         return None
 
