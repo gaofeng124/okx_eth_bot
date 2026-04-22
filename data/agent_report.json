@@ -1,19 +1,19 @@
 {
-  "ran_at": "2026-04-21 04:00 UTC",
-  "eth_price": "N/A (外部API不可达)",
+  "ran_at": "2026-04-22 05:00 UTC",
+  "eth_price": "N/A (API blocked)",
   "eth_24h_change_pct": "N/A",
-  "fear_greed_index": "N/A (外部API不可达)",
-  "funding_rate": "N/A (外部API不可达)",
-  "market_summary": "本轮外部市场API全部不可达，无法获取实时行情。策略持续以本地数据运行。P0参数状态良好（GRID_DAILY_TARGET=999，DRAWDOWN=2.0，满足≥2.0要求）。",
-  "decision": "实现 _adaptive_trail_offset 方法：与第19轮 _adaptive_trail_trigger 形成双维度自适应闭环，TP步长也根据近期成交利润格宽倍数自动调节",
+  "fear_greed_index": "N/A (API blocked)",
+  "funding_rate": "N/A (API blocked)",
+  "market_summary": "外部API在本环境不可达（Host not in allowlist）。策略已内置缓存降级机制，FGI默认50（中性），资金费率默认0.0。系统继续依赖REST runtime提供数据。",
+  "decision": "实现FGI格宽双向调整（极恐×0.8收窄/贪婪RANGING×1.2扩宽），并为_refresh_funding添加REST自取fallback（当runner未提供时直接REST获取，失败保留缓存）",
   "param_changes": [],
   "code_changes": [
     {
       "file": "quant/strategy/grid_pro.py",
-      "summary": "新增 _adaptive_trail_offset 方法（30行），并将 _maybe_trail_tp 中固定 _trail_offset 改为调用该方法：avg<0.30格则+0.03放宽，avg>0.80格则-0.03收紧，有界[0.08,0.35]，至少5次成交后生效"
+      "summary": "_place_grid新增FGI格宽调整：FGI<25→spacing×0.8，FGI>70且RANGING→spacing×1.2；_refresh_funding新增REST自取fallback"
     }
   ],
-  "risk_notes": "外部API（市价/FGI/资金费率）长期不可达，相关感知功能降级为默认值；adaptive系列需5次真实TP成交才生效，冷启动期间使用固定base值",
-  "next_focus": "P2: 实现资金费率感知代码框架（即使API不可达也应有fallback逻辑），funding_rate<-0.01%时多头减1档",
-  "round_number": "20"
+  "risk_notes": "外部API不可达导致FGI/资金费率只能靠runtime提供或保持默认值；REST fallback在网络受限环境会静默失败（已有try/except保护）",
+  "next_focus": "P1: 验证adaptive双维度自适应效果（日志搜索adaptive trigger/offset行）；P3: profit_spacings考虑EWMA加权替代简单平均",
+  "round_number": "21"
 }

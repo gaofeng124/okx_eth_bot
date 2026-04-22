@@ -1160,6 +1160,16 @@ class GridProStrategy(TickStrategy):
                 self._fear_greed_index, "空" if self._is_short else "多", n_active,
             )
 
+        # FGI 格宽调整（在档位调整基础上叠加）：
+        #   极度恐慌 FGI < 25 → 收窄 20%（市场震动剧烈，小格更易成交）
+        #   贪婪 FGI > 70 + RANGING → 扩宽 20%（情绪亢奋但震荡，每格利润更高）
+        if self._fear_greed_index < 25:
+            spacing = max(spacing * 0.80, self._min_sp)
+            log.info("[grid] 极恐FGI=%d，格宽收窄×0.8→%.5f", self._fear_greed_index, spacing)
+        elif self._fear_greed_index > 70 and regime == Regime.RANGING:
+            spacing = min(spacing * 1.20, self._max_sp)
+            log.info("[grid] 贪婪FGI=%d RANGING，格宽扩宽×1.2→%.5f", self._fear_greed_index, spacing)
+
         # US session (UTC 13-23 / CST 21-07): cap levels to 2 (原 1，L10-001 放宽)
         # 历史数据：50-fill 窗口 3/3 亏损在 US session，但样本太小且那时纯多头。
         # L2 做空上线后 US session 可能反而有利（美股下跌带 ETH 下跌 → 做空顺势）。
@@ -1619,6 +1629,21 @@ class GridProStrategy(TickStrategy):
             self._funding_rate    = float(fr)
             self._next_funding_ms = float(nf or 0.0)
             self._last_fund_ts    = now
+            return
+        # fallback: runner 未提供时直接 REST 获取，失败保留缓存值（最多1h重试一次）
+        self._last_fund_ts = now
+        try:
+            import urllib.request as _ur, json as _json
+            with _ur.urlopen(
+                f"https://www.okx.com/api/v5/public/funding-rate?instId={self._inst_id}",
+                timeout=5,
+            ) as r:
+                d = _json.loads(r.read())["data"][0]
+                self._funding_rate    = float(d["fundingRate"])
+                self._next_funding_ms = float(d.get("nextFundingTime", 0))
+                log.info("[grid] 资金费率REST自取: %.5f%%", self._funding_rate * 100)
+        except Exception as e:
+            log.debug("[grid] 资金费率REST获取失败（保留缓存%.5f）: %s", self._funding_rate, e)
 
     # ══════════════════════════════════════════════════════════════════════════
     # 恐贪指数（每小时更新）
