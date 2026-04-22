@@ -448,6 +448,23 @@ cd /root/okx_eth_bot && .venv/bin/python notify.py daily
 历史事件（2026-04-22）：主人批准 Phase 1 CPS=1.0，但 daemon 误读旧硬风控"≤ 0.3"
 反复将 CPS 降回 0.3 → 资金利用率从 50% 缩回 7.4% → 主人加仓毫无意义。
 
+## 📈 数据驱动放大铁律（2026-04-22 主人指导）
+
+**主人思路**："下单量 0.03 太少了。最少也得有1。你一直没有大量下单 后期再加注还是一点经验都没有 做好止损就可以了"
+
+**理解**：
+- 小规模（sz=0.3）成交的数据**不能外推**到放大后的表现
+- 必须在 sz=1.0 规模下积累 50+ 笔数据才有统计意义
+- 止损严格（per_slot_stop $0.8 + REST 兜底 0.7× + bleed_guard $0.3）是放大的前提
+
+**运行工具**：
+- `quant/tools/phase_monitor.py`：每 30 min 评估近 50 笔 → 判断 Phase 升/降建议
+  - 输出写到 `data/.phase_advice.json`（UPGRADE/DOWNGRADE/HOLD）
+  - daemon 读到 UPGRADE → 发 email `[建议] Phase 升级 N→N+1` 等主人决策
+  - **永远不得自己执行升级**
+- `quant/tools/trend_follow_watcher.py`：单边市补位（grid 在趋势市不赚钱）
+  - 独立后台进程，用 OCO 止盈止损（+$2 / -$1 = 盈亏比 2:1）
+
 ## 🔒 .env 的绝对禁写铁律（2026-04-22 主人反复强调：根治不是兜底）
 
 ### 你（daemon）**永远不得修改 .env 任何一行**

@@ -232,6 +232,23 @@ def scan() -> dict[str, Any]:
                 out["recommended_actions"].append(
                     f"spacing {env_spacing:.1f}bps > 2× ATR({atr_30min_bps:.1f}bps) → 静市挂单够不着"
                 )
+
+            # L11 策略失配警报（2026-04-22 新增）：4h 强趋势但在用 grid
+            try:
+                k4h = _okx("/api/v5/market/candles?instId=ETH-USDT-SWAP&bar=15m&limit=16")
+                if k4h.get("data") and len(k4h["data"]) >= 16:
+                    c_now = float(k4h["data"][0][4])
+                    c_4h = float(k4h["data"][-1][4])
+                    delta_4h = (c_now - c_4h) / c_4h * 100
+                    out["market"]["delta_4h_pct"] = round(delta_4h, 2)
+                    if abs(delta_4h) > 1.5:
+                        out["anomalies"].append("L11_STRATEGY_MISMATCH")
+                        out["recommended_actions"].append(
+                            f"4h delta={delta_4h:+.2f}% 强趋势，grid 策略在此环境难盈利 → "
+                            f"启动 trend_follow_watcher.py 突破追势"
+                        )
+            except Exception:
+                pass
     except Exception as e:
         out["market_error"] = str(e)
 
