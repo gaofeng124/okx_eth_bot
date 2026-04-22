@@ -1,19 +1,19 @@
 {
-  "ran_at": "2026-04-22 07:00 UTC",
+  "ran_at": "2026-04-22 08:00 UTC",
   "eth_price": "N/A (API不可达)",
   "eth_24h_change_pct": "N/A",
   "fear_greed_index": "N/A (API不可达)",
   "funding_rate": "N/A (API不可达)",
-  "market_summary": "外部API网络受限，无法获取实时市场数据。代码审计显示策略逻辑运行正常，本轮专注P1冷启动恢复功能实现。",
-  "decision": "实现_replay_tp_history()：重启后从analysis.jsonl重播TP成交历史，EWMA自适应不再需要等待5次新成交冷启动",
+  "market_summary": "外部API网络不可达（环境限制），市场数据无法获取。根据历史轨迹维持震荡偏谨慎判断，按计划执行P2代码升级。",
+  "decision": "实现分Regime的EWMA：_tp_profits_ranging/_tp_profits_trending双桶，按当前Regime路由TP利润记录，EWMA信号不再跨Regime混合稀释",
   "param_changes": [],
   "code_changes": [
     {
       "file": "quant/strategy/grid_pro.py",
-      "summary": "新增_replay_tp_history()方法+存储self._data_dir+fill_tp日志增加profit_spacings字段+__init__末尾调用冷启动恢复"
+      "summary": "将单一_tp_fill_profits deque拆分为_tp_profits_ranging/_tp_profits_trending两个分Regime桶；新增_tp_current_bucket property；_ewma_profit_avg()/_replay_tp_history()/_adaptive_trail_trigger/_adaptive_trail_offset全部适配；fill_tp record_analysis写入regime字段"
     }
   ],
-  "risk_notes": "外部API网络受限导致无法获取实盘数据；_replay_tp_history仅恢复含profit_spacings字段的新格式日志，旧日志静默跳过",
-  "next_focus": "验证冷启动恢复日志输出('[grid] 冷启动恢复 TP 历史')；分regime的EWMA（RANGING/TRENDING分别维护）",
-  "round_number": "23"
+  "risk_notes": "网络隔离环境无法验证实盘运行，所有改进依赖代码逻辑分析；分Regime桶冷启动期需要各bucket≥5条才激活自适应",
+  "next_focus": "P3: tp_mult与ATR联动的动态止盈（根据波动率实时调整每格利润目标倍数）",
+  "round_number": "24"
 }

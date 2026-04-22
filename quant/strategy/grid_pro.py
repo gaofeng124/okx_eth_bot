@@ -454,7 +454,9 @@ class GridProStrategy(TickStrategy):
         self._last_stop_ts:  float = 0.0
         self._last_cooldown_log_ts: float = 0.0   # 冷静期日志节流
         self._last_tp_trail_ts: float = 0.0       # 上次 TP 追踪时间（节流用）
-        self._tp_fill_profits: deque[tuple[float, float]] = deque(maxlen=20)  # (ts, profit_spacings)，EWMA加权
+        # 分 Regime 的 TP 利润 EWMA：RANGING 和 TRENDING 市场利润特征不同，混合会稀释信号
+        self._tp_profits_ranging:  deque[tuple[float, float]] = deque(maxlen=20)  # (ts, profit_spacings)
+        self._tp_profits_trending: deque[tuple[float, float]] = deque(maxlen=20)
         self._emergency_closing: bool = False
 
         # 止损计数（1h 窗口）
@@ -1374,25 +1376,36 @@ class GridProStrategy(TickStrategy):
         """时间衰减加权 EWMA：近期 TP 利润格宽倍数，半衰期 30min。
 
         权重 w_i = exp(-λ·(t_now - t_i))，λ = ln2 / half_life。
-        比简单均值更响应最近成交，5次以下数据时返回 None。
+        按当前 Regime 使用对应 bucket（RANGING/TRENDING 分开维护，互不干扰）。
+        5次以下数据时返回 None。
         """
-        if len(self._tp_fill_profits) < 5:
+        bucket = self._tp_current_bucket
+        if len(bucket) < 5:
             return None
         lam = math.log(2.0) / self._PROFIT_HALF_LIFE
         now = time.time()
         total_w = 0.0
         total_wv = 0.0
-        for ts, v in self._tp_fill_profits:
+        for ts, v in bucket:
             w = math.exp(-lam * max(0.0, now - ts))
             total_w += w
             total_wv += w * v
         return total_wv / total_w if total_w > 0.0 else None
 
+    @property
+    def _tp_current_bucket(self) -> "deque[tuple[float, float]]":
+        return (
+            self._tp_profits_ranging
+            if self._current_regime == Regime.RANGING
+            else self._tp_profits_trending
+        )
+
     def _replay_tp_history(self) -> None:
         """重启后从 analysis.jsonl 重播最近 TP 成交，使 EWMA 自适应立即可用。
 
         读取今日与昨日的 analysis.jsonl，筛选含 profit_spacings 的 fill_tp 事件，
-        按时间戳排序后写入 _tp_fill_profits（最多 maxlen=20）。
+        按时间戳排序后按 Regime 路由到 _tp_profits_ranging / _tp_profits_trending。
+        日志中含 regime 字段时精确分流；旧格式无此字段时默认归入 RANGING bucket。
         只有 profit_spacings 字段存在时才纳入（旧日志无此字段时静默跳过）。
         """
         import json as _json
@@ -1401,7 +1414,7 @@ class GridProStrategy(TickStrategy):
 
         data_dir = _Path(self._data_dir)
         today = _date.today()
-        records: list[tuple[float, float]] = []
+        records: list[tuple[float, float, str]] = []  # (ts, profit_spacings, regime_str)
         for d in (today, today - _td(days=1)):
             path = data_dir / "logs" / "daily" / d.isoformat() / "analysis.jsonl"
             if not path.exists():
@@ -1426,19 +1439,27 @@ class GridProStrategy(TickStrategy):
                             ts = _dt.fromisoformat(ts_wall).timestamp()
                         except Exception:
                             continue
-                        records.append((float(ts), float(ps)))
+                        regime_str = rec.get("regime", "RANGING")
+                        records.append((float(ts), float(ps), str(regime_str)))
             except Exception:
                 pass
 
         if not records:
             return
         records.sort(key=lambda x: x[0])
-        for ts, ps in records[-20:]:
-            self._tp_fill_profits.append((ts, ps))
+        # 取最近 40 条（每个 bucket 各 maxlen=20，合计上限）
+        for ts, ps, regime_str in records[-40:]:
+            if regime_str in ("TRENDING_UP", "TRENDING_DOWN"):
+                self._tp_profits_trending.append((ts, ps))
+            else:
+                self._tp_profits_ranging.append((ts, ps))
+        n_r = len(self._tp_profits_ranging)
+        n_t = len(self._tp_profits_trending)
         log.info(
-            "[grid] 冷启动恢复 TP 历史: 找到 %d 条，恢复 %d 条，EWMA%s",
-            len(records), len(self._tp_fill_profits),
-            " 即时可用" if len(self._tp_fill_profits) >= 5 else " 待更多成交(需5条)",
+            "[grid] 冷启动恢复 TP 历史: 找到 %d 条，ranging=%d trending=%d，EWMA ranging%s trending%s",
+            len(records), n_r, n_t,
+            " 即时可用" if n_r >= 5 else " 待更多成交",
+            " 即时可用" if n_t >= 5 else " 待更多成交",
         )
 
     def _adaptive_trail_trigger(self, base_trigger: float) -> float:
@@ -1463,8 +1484,8 @@ class GridProStrategy(TickStrategy):
             adapted = base_trigger
         if adapted != base_trigger:
             log.debug(
-                "[grid] adaptive trigger: base=%.2f → %.2f (avg_profit=%.3f格, n=%d)",
-                base_trigger, adapted, avg, len(self._tp_fill_profits),
+                "[grid] adaptive trigger: base=%.2f → %.2f (avg_profit=%.3f格, n=%d, regime=%s)",
+                base_trigger, adapted, avg, len(self._tp_current_bucket), self._current_regime.value,
             )
         return adapted
 
@@ -1491,8 +1512,8 @@ class GridProStrategy(TickStrategy):
             adapted = base_offset
         if adapted != base_offset:
             log.debug(
-                "[grid] adaptive offset: base=%.2f → %.2f (avg_profit=%.3f格, n=%d)",
-                base_offset, adapted, avg, len(self._tp_fill_profits),
+                "[grid] adaptive offset: base=%.2f → %.2f (avg_profit=%.3f格, n=%d, regime=%s)",
+                base_offset, adapted, avg, len(self._tp_current_bucket), self._current_regime.value,
             )
         return adapted
 
@@ -1679,12 +1700,12 @@ class GridProStrategy(TickStrategy):
                         contracts=s.fill_sz,
                         exit_reason="tp",
                     )
-            # 记录本次 TP 利润（格宽倍数 + 时间戳），供 _adaptive_trail_trigger EWMA 使用
+            # 记录本次 TP 利润（格宽倍数 + 时间戳），按 Regime 分桶，供 EWMA 使用
             _ps: float | None = None
             if self._grid_spacing > 0 and self._vwap > 0:
                 spacing_abs = self._grid_spacing * self._vwap
                 _ps = abs(fill_px - self._vwap) / spacing_abs
-                self._tp_fill_profits.append((time.time(), _ps))
+                self._tp_current_bucket.append((time.time(), _ps))
             log.info(
                 "[grid] TP 成交 @%.2f sz=%.1f net=%.4f USDT | 日累计=%.4f USDT",
                 fill_px, actual_fill, total_net, self._pnl.realized,
@@ -1699,6 +1720,7 @@ class GridProStrategy(TickStrategy):
                     daily_pnl_realized=self._pnl.realized,
                     entry_vwap=self._vwap,
                     profit_spacings=_ps,
+                    regime=self._current_regime.value,
                 )
             except Exception:
                 pass
