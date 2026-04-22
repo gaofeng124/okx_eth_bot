@@ -44,8 +44,10 @@ restart_system() {
     PID=$!
     log ">>> 系统已启动 PID=$PID"
 
-    # 2026-04-22 自动拉起 4 个辅助 daemon（主人不再需要 SSH 启动这些）
+    # 2026-04-22 自动拉起辅助 daemon（主人不再需要 SSH 启动这些）
     mkdir -p "$PROJECT_DIR/data/logs"
+
+    # 核心 4 daemon
     nohup "$VENV_PYTHON" -m quant.tools.trend_follow_watcher \
         >> "$PROJECT_DIR/data/logs/trend_follow.log" 2>&1 &
     log ">>> trend_follow_watcher PID=$!"
@@ -62,6 +64,19 @@ restart_system() {
     nohup "$VENV_PYTHON" -m quant.tools.loss_auto_logger --daemon \
         >> "$PROJECT_DIR/data/logs/loss_logger.log" 2>&1 &
     log ">>> loss_auto_logger PID=$!"
+
+    # 升级能力 daemon（2026-04-22 彻底升级）
+    # Etherscan 链上信号：每 10min 刷新缓存，给 strategy 读
+    pkill -f "onchain_signal" 2>/dev/null || true
+    nohup "$VENV_PYTHON" -m quant.tools.onchain_signal --daemon \
+        >> "$PROJECT_DIR/data/logs/onchain_signal.log" 2>&1 &
+    log ">>> onchain_signal PID=$!"
+
+    # 绩效评估：每 1h Sharpe/MDD/Kelly
+    pkill -f "performance_eval" 2>/dev/null || true
+    nohup "$VENV_PYTHON" -m quant.tools.performance_eval --daemon \
+        >> "$PROJECT_DIR/data/logs/performance_eval.log" 2>&1 &
+    log ">>> performance_eval PID=$!"
 }
 
 # 确保系统初始运行

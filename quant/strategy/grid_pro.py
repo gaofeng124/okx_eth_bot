@@ -2281,6 +2281,17 @@ class GridProStrategy(TickStrategy):
         _fr_norm = max(-1.0, min(1.0, -_fr / 0.0002))  # 2bps funding 算 full（反向）
         _dir_score += _fr_norm * 0.10
 
+        # S8（权重 0.15，2026-04-22 新增）：链上净流入信号（真 alpha —— 散户看不到）
+        # 由 quant.tools.onchain_signal 后台进程每 10min 刷新，strategy 读缓存
+        try:
+            from quant.tools.onchain_signal import read_signal_cached
+            _onchain = read_signal_cached()
+            if _onchain and "signal" in _onchain:
+                # signal 已归一化 [-1, +1]
+                _dir_score += float(_onchain["signal"]) * 0.15
+        except Exception:
+            pass  # 链上信号失败不影响主策略
+
         # S7（权重 0.20，2026-04-22 新增）：价格位置因子
         # 问题：13:31 / 13:52 两笔 sz=1.0 都在 ETH 刚破新高时买入，1-2min 回落被砸
         # 逻辑：靠近近 1h 高点不利做多（追顶），靠近低点不利做空（追底）

@@ -103,7 +103,12 @@ def write_state(s):
 
 
 def check_breakout():
-    """返回 (signal, close_price, high, low)"""
+    """增强版突破检测（2026-04-22 专业升级）：
+    1. 当前 close 突破近 20 根 15m 的最高/最低 ± 阈值
+    2. 【新】成交量确认：当前 bar volume > 近 20 bar 平均 × 1.5
+    3. 【新】连续 2 根 close 都在突破侧（防假突破）
+    三重过滤大幅降低假突破概率。
+    """
     k = httpx.get(
         "https://www.okx.com/api/v5/market/candles?instId=ETH-USDT-SWAP&bar=15m&limit=20",
         timeout=10,
@@ -111,17 +116,28 @@ def check_breakout():
     candles = k.get("data", [])
     if len(candles) < 20:
         return None, None, None, None
+
     closes = [float(c[4]) for c in candles]
     highs = [float(c[2]) for c in candles]
     lows = [float(c[3]) for c in candles]
-    close = closes[0]
-    hi_20 = max(highs[1:])  # 不含当前
-    lo_20 = min(lows[1:])
+    vols = [float(c[5]) for c in candles]  # 成交张数
 
+    close = closes[0]
+    prev_close = closes[1]
+    hi_20 = max(highs[2:])   # 不含当前和前一根
+    lo_20 = min(lows[2:])
+    avg_vol = sum(vols[1:]) / len(vols[1:])   # 不含当前
+    cur_vol = vols[0]
     thresh = BREAKOUT_THRESHOLD_BPS / 10000.0
-    if close > hi_20 * (1 + thresh):
+
+    # 成交量确认
+    vol_ok = cur_vol > avg_vol * 1.5
+
+    # 向上突破：当前 close + 前 close 都 > 近 20 bar 高点
+    if close > hi_20 * (1 + thresh) and prev_close > hi_20 * (1 + thresh * 0.5) and vol_ok:
         return "BREAKOUT_UP", close, hi_20, lo_20
-    if close < lo_20 * (1 - thresh):
+    # 向下突破
+    if close < lo_20 * (1 - thresh) and prev_close < lo_20 * (1 - thresh * 0.5) and vol_ok:
         return "BREAKOUT_DOWN", close, hi_20, lo_20
     return None, close, hi_20, lo_20
 
