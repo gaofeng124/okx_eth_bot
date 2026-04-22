@@ -2184,6 +2184,24 @@ class GridProStrategy(TickStrategy):
             except Exception as _tf_exc:  # factor 层不该影响交易层
                 log.debug("[grid][taker-gate] 读取异常（放行）: %s", _tf_exc)
 
+        # ── 10d2. 浮亏保护 gate（问题 4 加强，2026-04-22 主人紧急回退）
+        # 情景：持仓已经浮亏 > $0.30，但 strategy 想继续开同向新仓（摊平）
+        # → 死扛越陷越深（昨日 -$8.28 就是典型 → 4 笔 sz=1.0 全亏）
+        # 规则：任一 HOLDING 槽位浮亏 > $0.3 → 本轮拒绝开新格/补仓（等 TP 或止损先处理完）
+        if not self._grid_active:
+            _has_bleeding = False
+            _pnl_sign = self._pnl_sign()
+            for s in self._slots:
+                if s.state != _S.HOLDING or s.fill_sz <= 0 or s.fill_price <= 0:
+                    continue
+                slot_upl = (mid - s.fill_price) * s.fill_sz * self._ct_val * _pnl_sign
+                if slot_upl < -0.30:
+                    _has_bleeding = True
+                    break
+            if _has_bleeding:
+                log.info("[grid][bleed-guard] 持仓浮亏 > $0.3，拒绝开新格（避免摊平）")
+                return None
+
         # ── 10e. 实时方向票决 gate（2026-04-22 主人要求：每次下单前实时判断方向）
         # 3 信号内存投票（用 strategy 已有的 EMA/funding/macro_bias，毫秒级响应）：
         #   信号1: macro_bias（mid vs 5min EMA，已 feat 里）

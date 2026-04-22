@@ -33,10 +33,13 @@ if not os.environ.get("OKX_API_KEY"):
 import httpx
 
 CST = timezone(timedelta(hours=8))
-CHECK_INTERVAL_SEC = 10
+# 2026-04-22 加严（问题 3：per_slot_stop 被击穿）
+# 环境变量覆盖（emergency_rollback 会传 5s/0.7）
+CHECK_INTERVAL_SEC = int(os.getenv("REST_STOP_INTERVAL", "5"))
 STOP_LOSS_USDT = float(os.getenv("GRID_PER_SLOT_STOP_USDT", "1.5"))
-# 兜底更严：比 per_slot_stop 早 20% 触发（防 tick 延迟漏掉）
-TRIGGER_UPL = -STOP_LOSS_USDT * 0.9
+STOP_MULT = float(os.getenv("REST_STOP_MULT", "0.7"))
+# 兜底更严：比 per_slot_stop 早 30% 触发（原 20%）
+TRIGGER_UPL = -STOP_LOSS_USDT * STOP_MULT
 LOG_PATH = "/root/okx_eth_bot/data/logs/rest_stop_loss.log"
 
 
