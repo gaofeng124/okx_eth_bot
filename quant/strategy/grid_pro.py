@@ -1316,10 +1316,20 @@ class GridProStrategy(TickStrategy):
         if now - self._last_tp_trail_ts < _min_trail_iv:
             return  # 节流：避免每个 tick 都 cancel/replace TP 单
         spacing_abs = self._grid_spacing * self._vwap
-        # RANGING：步长 0.15 + 触发门槛 0.30；趋势：步长 0.25 + 触发门槛 0.40
-        # 两者均通过实盘成交利润自适应调整，形成双维度闭环
-        _trail_offset  = self._adaptive_trail_offset(0.15 if _is_ranging else 0.25)
-        _trail_trigger = self._adaptive_trail_trigger(0.30 if _is_ranging else 0.40)
+        # 2026-04-22 18:00 主人方案 A：放严 trail trigger 防偷盈利
+        #
+        # 问题分析：原 trigger 0.30 / 0.40 意思是"价格超出 TP 0.3-0.4 格宽就把
+        #           TP 拉近到 mid - 0.15×spacing"（几乎贴市价）。
+        #           结果：原 60bps TP 被拉到 ~5-10bps 才成交 → 偷 80% 盈利。
+        #
+        # 数学：avg_win 期望 $1.31 但实际 $0.21，差 $1.10 就是被 trail 偷的。
+        #
+        # 修复方向 A：放严 trigger 到 1.0 / 1.2（需要价格超出 TP 一整个格宽才启动）
+        #   效果：大多数 TP 在原位自然成交 → 拿全额 60bps
+        #   保留：极端延伸时（>1 格宽）仍可锁利，不丢过大盈利
+        # 修复方向 B：加大 offset 到 0.50 / 0.60（真 trail 时留更多空间）
+        _trail_offset  = self._adaptive_trail_offset(0.50 if _is_ranging else 0.60)
+        _trail_trigger = self._adaptive_trail_trigger(1.00 if _is_ranging else 1.20)
 
         if self._is_short:
             # short：市场继续下跌时向下追踪 TP，锁住更多空头利润
@@ -2147,7 +2157,11 @@ class GridProStrategy(TickStrategy):
             favorable_trend = (
                 Regime.TRENDING_DOWN if self._is_short else Regime.TRENDING_UP
             )
-            _TP_AGING_SEC = 600.0 if regime == favorable_trend else 480.0
+            # 2026-04-22 18:00 主人方案 A：延长 TP aging 让 TP 自然成交
+            # 原 480/600s 被迫市价平（吃 taker fee 7bps vs maker 2bps，丢 ~5bps/笔）
+            # 新 1800s（30min）让 TP 有充足时间自然 fill maker 完成
+            # 依然保留破位 + 浮亏 > $0.5 两个硬条件防止死扛
+            _TP_AGING_SEC = 1800.0 if regime == favorable_trend else 1500.0
             if self._is_short:
                 _tp_price_breach = self._vwap > 0 and mid > self._vwap * (1.0 + self._grid_spacing)
             else:
@@ -2171,10 +2185,11 @@ class GridProStrategy(TickStrategy):
             #   -$0.88 亏损就是持仓 ~6 小时慢慢扩大到触发 per_slot_stop=$0.8。
             # 改进：持仓超过 30 分钟且浮亏超 $0.30 → 主动止损，不等亏到 $0.8。
             # 效果：avg_loss $0.33 → $0.25（-24%），盈亏比数学直接改善 ~18%。
-            # 2026-04-22 17:30 盈亏比修复：门槛收紧 30min+$0.30 → 15min+$0.20
-            # 目的：让慢出血亏损单更早止损，配合 per_slot_stop $0.4 形成双重保护
-            _SLOW_BLEED_AGING_SEC = 900.0   # 15 分钟
-            _SLOW_BLEED_LOSS_USDT = 0.20
+            # 2026-04-22 18:00 主人方案 A：回退到原保守值
+            # 深度分析：止损已经及时，avg_loss $0.80 符合设定 → 不是问题
+            # 真问题在 TP 侧（avg_win 被偷 80%），见 _maybe_trail_tp 修复
+            _SLOW_BLEED_AGING_SEC = 1800.0  # 30 分钟（原值）
+            _SLOW_BLEED_LOSS_USDT = 0.30    # $0.30（原值）
             if (
                 self._tp_placed_ts > 0
                 and now - self._tp_placed_ts > _SLOW_BLEED_AGING_SEC
@@ -2413,18 +2428,18 @@ class GridProStrategy(TickStrategy):
         _hi_1h = self._price_1h_cache["hi"]
         _lo_1h = self._price_1h_cache["lo"]
         if _hi_1h > 0 and _lo_1h > 0:
-            # 距高 / 距低（bps）
+            # 2026-04-22 18:00 主人方案 A：加强价格位置 gate
+            # 原 10bps 阈值 + 0.20 权重不够严，追顶仍发生（sz=1.0 的 4 笔全亏案例）
+            # 新：20bps 阈值 + 0.30 权重 → 距高点 1h 阈值 20bps 内的 long 开仓几乎被否决
             _dist_hi = (_hi_1h - mid) / mid * 10000 if _hi_1h > mid else 0
             _dist_lo = (mid - _lo_1h) / mid * 10000 if mid > _lo_1h else 0
-            # 距高 < 10bps（≈0.1%）→ 追顶风险，贡献 -0.5 对 long
-            # 距低 < 10bps → 追底风险，贡献 +0.5（反向）对 short
             _pos_signal = 0.0
-            if _dist_hi < 10 and _dist_hi > 0:  # 非常接近高点
-                _pos_signal = -(1.0 - _dist_hi / 10)  # 距高 0bps → -1，距高 10bps → 0
-            elif _dist_lo < 10 and _dist_lo > 0:
-                _pos_signal = (1.0 - _dist_lo / 10)   # 距低 0bps → +1
-            # 权重 0.20 是最大的单权重，确保追顶追底时此因子能主导
-            _dir_score += _pos_signal * 0.20
+            if _dist_hi < 20 and _dist_hi > 0:  # 距高 20bps 内
+                _pos_signal = -(1.0 - _dist_hi / 20)  # 距高 0bps → -1，距高 20bps → 0
+            elif _dist_lo < 20 and _dist_lo > 0:
+                _pos_signal = (1.0 - _dist_lo / 20)
+            # 权重加到 0.30 — 最大单权重，确保追顶追底时此因子绝对主导
+            _dir_score += _pos_signal * 0.30
 
         # 方向匹配检查：strategy direction 与 score 符号一致才放行
         if not self._grid_active:

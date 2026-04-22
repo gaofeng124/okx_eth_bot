@@ -920,14 +920,17 @@ _LOCKED_GRID = {
     "GRID_CONTRACTS_PER_SLOT":       1.0,      # 主人要求 "最少得 1"
     "GRID_CONTRACTS_PER_SLOT_SHORT": 1.0,
     "GRID_LEVELS":                   3,
-    # 2026-04-22 17:30 盈亏比结构性修复（主人要求"加注赔钱金额大，收益金额小"）
-    # avg_loss $0.8 是 avg_win $0.21 的 3.8 倍，盈亏比 0.26 数学必亏
-    "GRID_PER_SLOT_STOP_USDT":       0.4,      # 0.8 → 0.4 砍半，avg_loss $0.8→$0.4
+    # 2026-04-22 18:00 主人方案 A：回退过度止损，核心修 TP 机制
+    # 深度分析发现 avg_win $0.21 只有预期 $1.31 的 16%
+    # → 80% 盈利被 maybe_trail_tp + TP aging 偷走
+    # → 止损本来就对，改止损是业余操作
+    # → 真正该改的是：让 TP 拿全额（放严 trail + 延长 aging）
+    "GRID_PER_SLOT_STOP_USDT":       0.8,       # 回退：止损及时，参数本来就对
     "GRID_WHOLE_STOP_USDT":          5.0,
     "GRID_DAILY_STOP_USDT":          8.0,
     "GRID_MIN_SPACING_PCT":          0.0030,
     "GRID_MAX_SPACING_PCT":          0.0080,
-    "GRID_TP_MULT":                  2.0,       # 1.5 → 2.0 拉大 avg_win $0.21→$0.30
+    "GRID_TP_MULT":                  2.0,       # 保留 2.0 —— 拉大 TP 距离
     "GRID_LEVERAGE":                 10.0,
     "GRID_DRAWDOWN_FROM_PEAK_USDT":  6.0,
 }
