@@ -152,6 +152,51 @@ on_tick →
 Grid 策略赚钱需要 **fills 足够多**（高频累积）。
 但当前 gate 层数 → 可能导致"挂单 fill 不到"。
 
+### 13 gate 决策路径完整流程图
+
+```
+┌─────────────────────────────────────────────────────────┐
+│ Tick (WS/REST) → grid_pro.on_tick(last, bid, ask, ctx)  │
+└───────────────────────┬─────────────────────────────────┘
+                        ▼
+  【阶段 A：热身 + 基础检查】
+  Gate 1. 热身期 < 30 ticks → return None
+  Gate 2. 日亏损/峰值止损 check_stop → emergency_close
+                        ▼
+  【阶段 B：持仓管理】
+  Gate 3. 危险 regime (TRENDING_DOWN/VOLATILE) → 撤挂单+60s 宽限+浮亏 >$1.5 止损
+  Gate 4. TP trail / TP aging（480-600s + 破位）/ 慢出血 aging（30min+$0.30）
+  Gate 5. 利润保护模式（达日目标 → 只守不开）
+                        ▼
+  【阶段 C：市场过滤】
+  Gate 6. 网格中心偏移 → 重定位
+  Gate 7. 市场条件（spread / velocity / liquidity）
+  Gate 8. 宏观趋势 macro_bias gate
+  Gate 9. 盘口不平衡 EMA gate
+                        ▼
+  【阶段 D：方向/质量评分】
+  Gate 10a. Taker Aggressor 逆势 gate（warn/block）
+  Gate 10b. 浮亏保护（持仓浮亏 > $0.3 拒开新）
+  Gate 10c. 7 维方向评分 |score| > 0.15 与 direction 反向 → skip
+  Gate 10d. Orderbook spread > 3bps → skip
+  Gate 10e. 开仓节流（2min > 2 次拒 + 补仓 60s > 2 次拒）
+                        ▼
+  【阶段 E：系统协调】
+  Gate 11. Circuit Breaker（速率级熔断）
+  Gate 12. Strategy Pool（当前 regime 是否允许 grid）
+                        ▼
+  【阶段 F：下单】
+  Gate 13. _place_grid → 计算 spacing / n_active / bias / sz_scale
+          → 分档挂 post_only 限价单
+```
+
+**每个 gate 的统计信息** —— daemon 需做的工作：
+- 每个 gate 的"拒绝率"（被拒/总次数）
+- 每个 gate 拒绝后 PnL 的"反事实模拟"：如果没拒绝会赚还是亏？
+- **专业优化**：反事实 PnL > 0 → gate 过严需放宽；反事实 PnL < 0 → gate 价值大
+
+目前没做这个统计。**这是明天白皮书的优化点之一**。
+
 ---
 
 ## 4. 买多还是买空？
@@ -206,6 +251,49 @@ Grid 策略赚钱需要 **fills 足够多**（高频累积）。
 - min_sz = 0.1 张
 - tick_sz = 0.01 USDT
 - maxLmtSz = 150 张
+
+### OKX 特色机制（专业量化能用的）
+
+**1. funding settlement arbitrage**（资金费率套利）
+每 8h 结算（UTC 00:00 / 08:00 / 16:00），funding rate 极端时：
+- > +0.05%: 多头付空头 → 结算前开空 + 结算后平 → **纯收 funding**
+- < -0.05%: 空头付多头 → 结算前开多
+- 注：套利需 **spot 对冲**才真 risk-free（我们只做 perp，有方向风险）
+
+**2. 保证金模式选择**
+- isolated：仓位独立，爆仓仅损失该仓保证金（我们用）
+- cross：账户共享保证金，资金效率高但爆仓连累全账户
+- **升级方向**：grid 仓 isolated，trend_follow 仓可试 cross（大仓时效率 +30%）
+
+**3. 订单簿深度优化**
+- OKX books WS 更新 10-100ms（vs REST 15s）
+- **升级方向**：我们已订阅 books5，可升级 books-l2（更深、更新更快）
+
+**4. 降低 fee 路径**
+- VIP 0 → maker -0.02%（我们当前）
+- VIP 1（月交易量 $5M） → maker -0.025%（-25%）
+- VIP 2 → maker -0.03%
+- **现实**：小账户 ~$186 × 100 笔/日 × 2x 杠杆 = $37k/日 notional → 月 ~$1.1M
+- 远达不到 VIP 1，fee 优化靠"减少 taker 比例"而非 VIP 升级
+
+**5. OKX 特色单类型未用**
+- **conditional order**（条件单）：预设触发价，不占挂单配额
+- **MMP（Market Maker Protection）**：做市商保护机制，大批量挂单时防止被"扫"
+- **Algo order with TP/SL**：开仓即带 TP/SL，不需要 strategy 单独管理
+
+### API 配额限制（专业必须知）
+
+| API | 限速 |
+|---|---|
+| 私有（下单/撤单）| 60 req/2s |
+| 行情（K线/深度）| 40 req/2s |
+| 账户查询 | 10 req/2s |
+
+**当前使用估算**：
+- WS private（订单推送）：0 req（未用，主升级机会）
+- WS public：< 1/s（book + trades）
+- REST 查询（positions / fills）：~5/分钟（节流）
+- **空间很大**：订阅 WS private 即可把 REST 查询砍 90%
 
 ---
 
@@ -317,22 +405,54 @@ Grid 策略赚钱需要 **fills 足够多**（高频累积）。
 
 （明天完善，按 ROI 排序）
 
-### 本周（P0-P1）
-- [ ] 等 signal_attribution 24h 数据 → 砍 IC < 0.05 信号
-- [ ] 执行质量采集（每笔记录 intended/fill/slippage）
-- [ ] Circuit Breaker 已上线 ✅
-- [ ] 真实 backtest（30 天 1m 数据 + next-bar open 撮合）
+### 升级 ROI 评分矩阵（2026-04-22 17:00 正向思维版）
 
-### 下周（P1-P2）
-- [ ] 实时 Dashboard HTML
-- [ ] Alert 体系（邮件 + 日志聚合）
-- [ ] WS private 订阅（减少 REST 延迟）
-- [ ] Look-ahead bias 修正
+按 **(预期收益 × 概率) / 开发成本 × 风险** 排序：
 
-### 下月（P2）
-- [ ] Bidirectional grid（同时 long/short）
-- [ ] 代码重构（拆 grid_pro.py）
-- [ ] 单元测试
+| # | 升级项 | 预期 ROI | 开发时间 | 风险 | 优先级 |
+|---|---|---|---|---|---|
+| 1 | **时段 per_slot_stop 动态**（CST 00-03 砍半）| **日 +$2-4** | 1h | 低 | P0-A |
+| 2 | **ATR-aware sz scale**（ATR > 40bps 缩 sz）| **日 +$1-2** | 1h | 低 | P0-A |
+| 3 | **WS private 订阅**（订单实时推送替代 REST）| 延迟 -95% | 4h | 中 | P0-B |
+| 4 | **signal_attribution 24h 数据 → 砍 IC<0.05** | **系统净化** | 1h 后 | 低 | P0-B |
+| 5 | **真 backtest（30天1m+next-bar撮合）** | **决策支撑** | 8h | 中 | P1 |
+| 6 | **Dashboard HTML**（P&L曲线+Kelly实时）| 主人可观察 | 4h | 低 | P1 |
+| 7 | **gate 反事实统计**（每 gate 的"错杀"率）| **信号优化依据** | 4h | 低 | P1 |
+| 8 | **时段切策略 grid→trend_follow** | 结构升级 | 8h | 中 | P1-B |
+| 9 | **Alert 体系邮件+Telegram** | 主人安心 | 4h | 低 | P1 |
+| 10 | **OCO conditional order 替代 strategy TP** | -50% 代码复杂度 | 6h | 中 | P2 |
+| 11 | **Bidirectional grid**（同时 long/short）| **结构性 +20%** | 16h | 高 | P2 |
+| 12 | **代码重构拆 grid_pro.py** | 维护性 | 12h | 中 | P2 |
+| 13 | **funding rate 结算 arb**（需 spot 对冲）| 5-15bps/8h | 20h | 高 | P3 |
+| 14 | **多资产（BTC/SOL）分散** | 风险分散 | 20h | 高 | P3 |
+
+### 关键迭代原则（正向思维，非防御）
+
+1. **每个 P0 升级完成后**，运行 2h 验证 Sharpe 是否改善
+2. **不盲改**：backtest 说好 → 才上生产
+3. **优先做"改善 avg_loss"的升级**（当前 avg_loss -$0.53 → 目标 -$0.40）
+4. **不做"关闭交易"**（除非紧急熔断）—— 关闭 = 放弃赚钱机会
+
+### 本周（P0）
+- [x] Circuit Breaker 已上线 ✅
+- [x] fill_quality_logger 采集 ✅
+- [x] signal_attribution 采样 ✅
+- [x] 节流 gate 补仓绕过 bug 修复 ✅
+- [ ] **升级 #1**：时段 per_slot_stop 动态
+- [ ] **升级 #2**：ATR-aware sz scale
+- [ ] **升级 #4**：IC 数据分析 → 砍噪声信号
+
+### 下周（P1）
+- [ ] WS private 订阅
+- [ ] 真 backtest 引擎（next-bar撮合）
+- [ ] Dashboard HTML
+- [ ] gate 反事实统计
+- [ ] 时段切策略方案 C
+
+### 下月（P2-P3）
+- [ ] Bidirectional grid
+- [ ] 代码重构
+- [ ] OCO 替代 strategy TP
 
 ---
 
