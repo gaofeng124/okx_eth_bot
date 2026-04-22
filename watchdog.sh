@@ -65,18 +65,42 @@ restart_system() {
         >> "$PROJECT_DIR/data/logs/loss_logger.log" 2>&1 &
     log ">>> loss_auto_logger PID=$!"
 
-    # 升级能力 daemon（2026-04-22 彻底升级）
-    # Etherscan 链上信号：每 10min 刷新缓存，给 strategy 读
+    # 升级能力 daemon（2026-04-22 彻底升级 Phase I）
     pkill -f "onchain_signal" 2>/dev/null || true
     nohup "$VENV_PYTHON" -m quant.tools.onchain_signal --daemon \
         >> "$PROJECT_DIR/data/logs/onchain_signal.log" 2>&1 &
     log ">>> onchain_signal PID=$!"
 
-    # 绩效评估：每 1h Sharpe/MDD/Kelly
     pkill -f "performance_eval" 2>/dev/null || true
     nohup "$VENV_PYTHON" -m quant.tools.performance_eval --daemon \
         >> "$PROJECT_DIR/data/logs/performance_eval.log" 2>&1 &
     log ">>> performance_eval PID=$!"
+
+    # Phase II 5 项能力扩展（2026-04-22 立刻升级）
+    pkill -f "strategy_pool" 2>/dev/null || true
+    nohup "$VENV_PYTHON" -m quant.tools.strategy_pool --daemon \
+        >> "$PROJECT_DIR/data/logs/strategy_pool.log" 2>&1 &
+    log ">>> strategy_pool PID=$!"
+
+    pkill -f "mean_reversion_watcher" 2>/dev/null || true
+    nohup "$VENV_PYTHON" -m quant.tools.mean_reversion_watcher --daemon \
+        >> "$PROJECT_DIR/data/logs/mean_reversion.log" 2>&1 &
+    log ">>> mean_reversion_watcher PID=$!"
+
+    pkill -f "funding_arb_watcher" 2>/dev/null || true
+    nohup "$VENV_PYTHON" -m quant.tools.funding_arb_watcher --daemon \
+        >> "$PROJECT_DIR/data/logs/funding_arb.log" 2>&1 &
+    log ">>> funding_arb_watcher PID=$!"
+
+    pkill -f "orderbook_signal" 2>/dev/null || true
+    nohup "$VENV_PYTHON" -m quant.tools.orderbook_signal --daemon \
+        >> "$PROJECT_DIR/data/logs/orderbook_signal.log" 2>&1 &
+    log ">>> orderbook_signal PID=$!"
+
+    pkill -f "cross_asset_signal" 2>/dev/null || true
+    nohup "$VENV_PYTHON" -m quant.tools.cross_asset_signal --daemon \
+        >> "$PROJECT_DIR/data/logs/cross_asset.log" 2>&1 &
+    log ">>> cross_asset_signal PID=$!"
 }
 
 # 确保系统初始运行

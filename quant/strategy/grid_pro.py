@@ -2281,16 +2281,58 @@ class GridProStrategy(TickStrategy):
         _fr_norm = max(-1.0, min(1.0, -_fr / 0.0002))  # 2bps funding 算 full（反向）
         _dir_score += _fr_norm * 0.10
 
-        # S8（权重 0.15，2026-04-22 新增）：链上净流入信号（真 alpha —— 散户看不到）
-        # 由 quant.tools.onchain_signal 后台进程每 10min 刷新，strategy 读缓存
+        # S8（权重 0.15）：链上净流入（真 alpha）
         try:
             from quant.tools.onchain_signal import read_signal_cached
             _onchain = read_signal_cached()
             if _onchain and "signal" in _onchain:
-                # signal 已归一化 [-1, +1]
                 _dir_score += float(_onchain["signal"]) * 0.15
         except Exception:
-            pass  # 链上信号失败不影响主策略
+            pass
+
+        # S9（权重 0.10）：Funding Rate Arbitrage 信号
+        try:
+            from quant.tools.funding_arb_watcher import read_cached as _fa_read
+            _fa = _fa_read()
+            if _fa and "time_weighted_signal" in _fa:
+                _dir_score += float(_fa["time_weighted_signal"]) * 0.10
+        except Exception:
+            pass
+
+        # S10（权重 0.10）：Order Book 微观结构（大单墙 + 整数关口）
+        try:
+            from quant.tools.orderbook_signal import read_cached as _ob_read
+            _ob = _ob_read()
+            if _ob and "signal" in _ob:
+                _dir_score += float(_ob["signal"]) * 0.10
+                # Spread 异常 → 拒绝开仓（流动性差）
+                if _ob.get("spread_alert") and not self._grid_active:
+                    log.info("[grid][spread-alert] spread=%.1fbps 过宽，跳过开格", _ob.get("spread_bps", 0))
+                    return None
+        except Exception:
+            pass
+
+        # S11（权重 0.10）：Cross-asset（BTC 联动）
+        try:
+            from quant.tools.cross_asset_signal import read_cached as _xa_read
+            _xa = _xa_read()
+            if _xa and "signal" in _xa:
+                _dir_score += float(_xa["signal"]) * 0.10
+        except Exception:
+            pass
+
+        # 新增：strategy_pool 检查（多策略协调）
+        try:
+            from quant.tools.strategy_pool import load_active
+            _pool = load_active()
+            if not _pool.get("grid", True) and not self._grid_active:
+                log.info(
+                    "[grid][pool] strategy_pool 将 grid 标记为 OFF（regime=%s），暂停新开格",
+                    _pool.get("regime"),
+                )
+                return None
+        except Exception:
+            pass
 
         # S7（权重 0.20，2026-04-22 新增）：价格位置因子
         # 问题：13:31 / 13:52 两笔 sz=1.0 都在 ETH 刚破新高时买入，1-2min 回落被砸
