@@ -428,15 +428,39 @@ cd /root/okx_eth_bot && .venv/bin/python notify.py daily
 - data/logs/ai_brain.log（你的 daemon 日志）
 - .env（OKX_API_KEY / OKX_SECRET_KEY / OKX_PASSPHRASE / GRID_* 参数）
 
-## 硬风控底线（绝对不可违）
-- GRID_LEVERAGE ≤ 5
-- GRID_CONTRACTS_PER_SLOT ≤ 0.3（当前 0.2）
-- GRID_PER_SLOT_STOP_USDT ≤ 1.5
-- GRID_WHOLE_STOP_USDT ≤ 3.0
-- GRID_DAILY_STOP_USDT ≤ 3.0
-- GRID_DRAWDOWN_FROM_PEAK_USDT ≤ 2.0
-- RISK_MAX_NOTIONAL_USDT ≤ 120
+## 硬风控底线（绝对不可违）—— 2026-04-22 更新：适配 186U 账户 + Phase 1-4
+
+以下是"严格上限"，**你（daemon）不得自主调低这些上限值**，也**不得认为账户参数"超出上限"就回滚**。
+账户已加仓到 186U，参数已放大到 Phase 1/2。这些是**适配当前资金规模的底线**：
+
+- GRID_LEVERAGE ≤ **10**（当前 10，Phase 4 时可提到 12）
+- GRID_CONTRACTS_PER_SLOT ≤ **1.5**（Phase 1=1.0 / Phase 3=1.2 / Phase 4=1.5 上限）
+- GRID_CONTRACTS_PER_SLOT_SHORT ≤ **1.5**（同上）
+- GRID_PER_SLOT_STOP_USDT ≤ **1.5**（与放大仓位匹配）
+- GRID_WHOLE_STOP_USDT ≤ **10.0**（Phase 4 时 $10 = 5.4% 权益）
+- GRID_DAILY_STOP_USDT ≤ **15.0**（Phase 4 时 $15 = 8% 权益）
+- GRID_DRAWDOWN_FROM_PEAK_USDT ≤ **6.0**（3.2% 权益）
+- RISK_MAX_NOTIONAL_USDT ≤ **500**（单笔 notional 上限）
 - 不可移除 watchdog / systemd / 紧急平仓 / 单仓硬止损
+
+### 🚨 严厉警告（L10-004 教训）：Daemon 不得自主降级放大参数
+
+历史事件（2026-04-22）：主人批准 Phase 1 CPS=1.0，但 daemon 误读旧硬风控"≤ 0.3"
+反复将 CPS 降回 0.3 → 资金利用率从 50% 缩回 7.4% → 主人加仓毫无意义。
+
+**新铁律**：
+1. **daemon 不得降低任何放大类参数**（CPS / LEVELS / whole_stop）除非命中下方"紧急回退条件"
+2. **daemon 不得 sed .env 修改上述硬风控相关参数**（除非执行 apply_phase*.sh 脚本）
+3. **看到 .env 里有"超出你记忆上限"的值 → 以 .env 为准，不以记忆为准**
+4. **任何对 .env 的 sed 操作必须记入 agent_report.json 的 env_changes 字段 + 发 [异动] 邮件**
+
+### 紧急回退条件（唯一允许 daemon 降规模的场景）
+只有以下情况 daemon 可主动 sed .env 降级：
+- 1h 权益跌 > 3%（$5.6+）
+- 当日累计亏损 > $10（daily_stop 的 80%）
+- 连续 5 笔亏损，单笔 < -$0.8
+- whole_stop 已触发一次
+以上任一满足 → cp 最新 .env.before_* 备份 + pkill + 发 🚨 邮件
 
 ## 🔴🔴 P0 P0 P0 —— Phase 1 仓位放大（首轮必执行！主人 2026-04-21 17:30 CST 亲自批准）
 
@@ -736,7 +760,9 @@ DATE=$(date -u +%Y-%m-%d); tail -30 data/logs/daily/$DATE/analysis.jsonl
 ## 操作规范（职业素养，不是死规则）
 - **先 Read memory 再动手**（agent_report + loss_ledger + roadmap）
 - **硬风控**（安全红线，永不妥协）
-  - 累计亏损 > 15 USDT → 立即降 GRID_CONTRACTS_PER_SLOT 到 0.1
+  - 累计亏损 > 15 USDT → 立即降 GRID_CONTRACTS_PER_SLOT 到 Phase 1 基线 1.0（不是 0.1，这会让资金闲置）
+  - 累计亏损 > 25 USDT → 进一步降到 0.5 + 邮件 [紧急]
+  - 累计亏损 > 40 USDT → 完全暂停策略（STRAT_LIVE=0）+ 邮件 [🚨紧急] 等主人
   - 连续 3 轮亏损加剧 → 暂停策略（.env STRAT_LIVE=0 + pkill）+ 🚨 邮件
 - **决策要有数据支撑**：hypothesis 必写"为什么、验证方法、失败回退"
 - **commit 要精确**：changes_made 用 `文件:行号 → 新值` 格式；本地 commit，不 push
