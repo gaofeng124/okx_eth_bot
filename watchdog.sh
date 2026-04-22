@@ -31,6 +31,11 @@ log() {
 restart_system() {
     log ">>> 停止旧进程..."
     pkill -f "$RUN_SCRIPT" 2>/dev/null
+    # 2026-04-22 也停所有辅助 daemon（代码变化后一起拉起）
+    pkill -f "trend_follow_watcher" 2>/dev/null
+    pkill -f "rest_stop_loss" 2>/dev/null
+    pkill -f "phase_monitor" 2>/dev/null
+    pkill -f "loss_auto_logger" 2>/dev/null
     sleep 2
 
     log ">>> 启动系统..."
@@ -38,6 +43,25 @@ restart_system() {
     nohup "$VENV_PYTHON" "$RUN_SCRIPT" >> "$LOG_FILE" 2>&1 &
     PID=$!
     log ">>> 系统已启动 PID=$PID"
+
+    # 2026-04-22 自动拉起 4 个辅助 daemon（主人不再需要 SSH 启动这些）
+    mkdir -p "$PROJECT_DIR/data/logs"
+    nohup "$VENV_PYTHON" -m quant.tools.trend_follow_watcher \
+        >> "$PROJECT_DIR/data/logs/trend_follow.log" 2>&1 &
+    log ">>> trend_follow_watcher PID=$!"
+
+    REST_STOP_INTERVAL=5 REST_STOP_MULT=0.7 \
+        nohup "$VENV_PYTHON" -m quant.tools.rest_stop_loss \
+        >> "$PROJECT_DIR/data/logs/rest_stop_loss.log" 2>&1 &
+    log ">>> rest_stop_loss PID=$!"
+
+    nohup "$VENV_PYTHON" -m quant.tools.phase_monitor --daemon \
+        >> "$PROJECT_DIR/data/logs/phase_monitor.log" 2>&1 &
+    log ">>> phase_monitor PID=$!"
+
+    nohup "$VENV_PYTHON" -m quant.tools.loss_auto_logger --daemon \
+        >> "$PROJECT_DIR/data/logs/loss_logger.log" 2>&1 &
+    log ">>> loss_auto_logger PID=$!"
 }
 
 # 确保系统初始运行
