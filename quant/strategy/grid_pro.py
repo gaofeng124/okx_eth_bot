@@ -2202,43 +2202,65 @@ class GridProStrategy(TickStrategy):
                 log.info("[grid][bleed-guard] 持仓浮亏 > $0.3，拒绝开新格（避免摊平）")
                 return None
 
-        # ── 10e. 实时方向票决 gate（2026-04-22 主人要求：每次下单前实时判断方向）
-        # 3 信号内存投票（用 strategy 已有的 EMA/funding/macro_bias，毫秒级响应）：
-        #   信号1: macro_bias（mid vs 5min EMA，已 feat 里）
-        #   信号2: funding rate（缓存值）
-        #   信号3: EMA fast vs slow（ema_f/ema_s）
-        # 如果当前 direction 在实时投票中"弱势" → 跳过本次开格（避免买涨挨跌/买跌挨涨）
-        # 不是切换 direction（配置层由 Regime Router 5min 层处理），是"不下错方向的单"
-        _long_votes = 0
-        _short_votes = 0
-        # 信号1: macro_bias
-        _mb = feat["macro_bias"]
-        if _mb > 0.0010:
-            _long_votes += 1
-        elif _mb < -0.0010:
-            _short_votes += 1
-        # 信号2: funding rate（> 0 表示多头贵 → 偏空信号；< 0 表示空头贵 → 偏多信号）
-        _fr = self._funding_rate or 0.0
-        if _fr < -0.00005:
-            _long_votes += 1
-        elif _fr > 0.00005:
-            _short_votes += 1
-        # 信号3: ema_fast vs ema_slow
+        # ── 10e. 实时方向评分 gate（2026-04-22 主人要求：科学专业实时）
+        # 专业版：6 维加权连续评分（非投票），用秒级微观结构信号
+        # Score 范围 [-1, +1]：+ 偏多 / - 偏空；阈值 0.15 触发方向匹配检查
+        # 若 sign(score) 与当前 direction 相反 → 跳过本次开格（避免逆市场下单）
+        _dir_score = 0.0
+
+        # S1（权重 0.25）：实时盘口不平衡（非 EMA 平滑 —— 取上游原始值）
+        # 正值 = 买压主导 → 偏多；负值 = 卖压主导 → 偏空
+        _raw_imb_now = _strt.get("book_imbalance") if isinstance(_strt, dict) else None
+        if isinstance(_raw_imb_now, (int, float)):
+            _dir_score += max(-1.0, min(1.0, float(_raw_imb_now))) * 0.25
+
+        # S2（权重 0.25）：Taker aggressor ratio 10s（秒级 alpha —— 散户看不到）
+        _tf_obj = (runtime.get("strategy_runtime") or {}).get("taker_flow")
+        if _tf_obj is not None:
+            try:
+                _ar10 = _tf_obj.aggressor_ratio(10) if _tf_obj.health.get("healthy") else None
+                if _ar10 is not None:
+                    # ar 0.5 = 中性；映射到 [-1,+1]：(ar-0.5)*2
+                    _dir_score += (float(_ar10) - 0.5) * 2.0 * 0.25
+            except Exception:
+                pass
+
+        # S3（权重 0.15）：CVD 5min（累计主动买卖净差，正多负空）
+        if _tf_obj is not None:
+            try:
+                _cvd = _tf_obj.cvd_recent(300) if _tf_obj.health.get("healthy") else 0.0
+                # CVD 单位 ETH，5min 内 > 50 ETH 算强，用 tanh 归一
+                _cvd_norm = math.tanh(_cvd / 50.0)
+                _dir_score += _cvd_norm * 0.15
+            except Exception:
+                pass
+
+        # S4（权重 0.15）：短期动量（EMA fast vs slow，秒级 tick 累积）
         if ema_s > 0:
-            _ema_ratio = ema_f / ema_s
-            if _ema_ratio > 1.0005:
-                _long_votes += 1
-            elif _ema_ratio < 0.9995:
-                _short_votes += 1
-        # 票决：当前 direction 是弱势方 → 跳过
+            _ema_signal = (ema_f - ema_s) / ema_s
+            # 归一到 [-1,+1]：0.003 = 30bps 差异算 full signal
+            _ema_norm = max(-1.0, min(1.0, _ema_signal / 0.003))
+            _dir_score += _ema_norm * 0.15
+
+        # S5（权重 0.10）：Macro bias（mid vs 5min EMA，中期趋势）
+        _mb = feat["macro_bias"]
+        _mb_norm = max(-1.0, min(1.0, _mb / 0.005))  # 0.5% 算 full
+        _dir_score += _mb_norm * 0.10
+
+        # S6（权重 0.10）：Funding rate（慢信号，8h 结算；反向：多头贵偏空）
+        _fr = self._funding_rate or 0.0
+        _fr_norm = max(-1.0, min(1.0, -_fr / 0.0002))  # 2bps funding 算 full（反向）
+        _dir_score += _fr_norm * 0.10
+
+        # 方向匹配检查：strategy direction 与 score 符号一致才放行
         if not self._grid_active:
-            my_votes = _short_votes if self._is_short else _long_votes
-            opp_votes = _long_votes if self._is_short else _short_votes
-            if opp_votes > my_votes:
+            my_dir_sign = -1.0 if self._is_short else +1.0
+            # 要求 score 有明确方向（|score| > 0.15）且与 my_dir 一致
+            if abs(_dir_score) > 0.15 and my_dir_sign * _dir_score < 0:
                 if market_ok and not macro_adverse and not book_adverse:
                     log.info(
-                        "[grid][realtime-dir] %s 实时逆势 long=%d short=%d，跳过开格（保护）",
-                        "空" if self._is_short else "多", _long_votes, _short_votes,
+                        "[grid][dir-score] %s 实时逆势 score=%.3f（权重: imb+aggr+cvd+ema+mb+fr），跳过开格",
+                        "空" if self._is_short else "多", _dir_score,
                     )
                 return None
 
@@ -2252,10 +2274,10 @@ class GridProStrategy(TickStrategy):
             return None
 
         # ── 12. 补充空置槽位 ───────────────────────────────────────────────
-        # 实时方向 gate 也应用到补仓：如果即时市场转向就不补新档位
-        my_v = _short_votes if self._is_short else _long_votes
-        opp_v = _long_votes if self._is_short else _short_votes
-        _fill_ok_dir = opp_v <= my_v + 1  # 对手领先 2 票才阻止补档
+        # 方向评分 gate 也应用到补仓：强烈逆势时不补新档
+        my_dir_sign_fill = -1.0 if self._is_short else +1.0
+        # 补档比开格宽容些：|score| > 0.30 且反向才阻止
+        _fill_ok_dir = not (abs(_dir_score) > 0.30 and my_dir_sign_fill * _dir_score < 0)
         if self._grid_active and market_ok and _fill_ok_dir:
             dir_sign = self._grid_spacing_sign()
             for s in self._slots:

@@ -448,19 +448,41 @@ cd /root/okx_eth_bot && .venv/bin/python notify.py daily
 历史事件（2026-04-22）：主人批准 Phase 1 CPS=1.0，但 daemon 误读旧硬风控"≤ 0.3"
 反复将 CPS 降回 0.3 → 资金利用率从 50% 缩回 7.4% → 主人加仓毫无意义。
 
-**新铁律**：
-1. **daemon 不得降低任何放大类参数**（CPS / LEVELS / whole_stop）除非命中下方"紧急回退条件"
-2. **daemon 不得 sed .env 修改上述硬风控相关参数**（除非执行 apply_phase*.sh 脚本）
-3. **看到 .env 里有"超出你记忆上限"的值 → 以 .env 为准，不以记忆为准**
-4. **任何对 .env 的 sed 操作必须记入 agent_report.json 的 env_changes 字段 + 发 [异动] 邮件**
+## 🔒 .env 的绝对禁写铁律（2026-04-22 主人反复强调：根治不是兜底）
 
-### 紧急回退条件（唯一允许 daemon 降规模的场景）
-只有以下情况 daemon 可主动 sed .env 降级：
-- 1h 权益跌 > 3%（$5.6+）
-- 当日累计亏损 > $10（daily_stop 的 80%）
-- 连续 5 笔亏损，单笔 < -$0.8
-- whole_stop 已触发一次
-以上任一满足 → cp 最新 .env.before_* 备份 + pkill + 发 🚨 邮件
+### 你（daemon）**永远不得修改 .env 任何一行**
+
+不允许的操作（全部）：
+- ❌ `sed -i ... .env`
+- ❌ `echo ... >> .env`
+- ❌ `Edit` 工具改 .env
+- ❌ `Write` 工具创建 .env
+- ❌ 任何其他方式写入 .env
+- ❌ 执行 `apply_phase*.sh` / `fix_*.sh` / `emergency_*.sh`（这些脚本只能主人手动执行）
+
+### 你看到问题怎么办？
+
+**发现参数需要调整** → 在 `agent_report.json` 的 `recommendations` 字段写清：
+```json
+"recommendations": [
+  {
+    "param": "GRID_CONTRACTS_PER_SLOT",
+    "current": 0.3,
+    "suggested": 0.5,
+    "reason": "近 30 笔 EV=+0.05, WL=0.6 达标，可放大 1.67×",
+    "risk": "若市场反转..."
+  }
+]
+```
+
+**发现需要紧急处理** → 发邮件 `[紧急] 需主人决策: ...`，但仍然**不得自己动 .env**。
+
+**禁止理由**：daemon（你）对市场结构的判断力**不够成熟**。放大/缩小仓位的决定必须经过主人或专门的 data-driven script。历史上你已 5+ 次偷改 CPS 把主人加仓的资金降到无用。**这是职业边界**。
+
+### 如果你"必须"做点什么的例外（唯二）
+
+1. **紧急平仓**（持仓浮亏接近爆仓）→ 调 `/api/v5/trade/close-position` API。这是平仓，不是改参数。
+2. **`pkill -f run_strategy.py`** 用于重启策略。不是改 .env。
 
 ## 🔴🔴 P0 P0 P0 —— Phase 1 仓位放大（首轮必执行！主人 2026-04-21 17:30 CST 亲自批准）
 
@@ -681,7 +703,7 @@ DATE=$(date -u +%Y-%m-%d); tail -30 data/logs/daily/$DATE/analysis.jsonl
 | `LOW_CAPITAL_USAGE` | 资金利用率 < 15% | 查 Phase 是否卡住；挂单数是否 < 预期；是否 US session cap 阻挡 |
 | `MISSING_GRID_LEVELS` | 实际挂单 < max_levels/2 | 查 vol_regime 是否 DEAD/ELEVATED 限档；查 gate 阻挡率 |
 | `STALL_NO_FILLS` | 近 30min 零成交（市场活跃）| 查 spacing vs ATR；挂单距离是否 > 30min range；必要时收紧 spacing |
-| `SPACING_TOO_WIDE` | spacing > 2× ATR_30m | 立即 `sed -i 's/^GRID_MIN_SPACING_PCT=.*/GRID_MIN_SPACING_PCT=0.0018/' .env` + pkill |
+| `SPACING_TOO_WIDE` | spacing > 2× ATR_30m | 写入 agent_report.json recommendations：建议 spacing 调整值 + 理由（**不得自己 sed .env**） |
 | `FEE_GROSS_RATIO_HIGH` | 近 20 笔 fee/gross > 40% | 反向：spacing 太窄，拉宽到 0.0030+ |
 | `UNREALIZED_BLEEDING` | 浮亏 > $1 | 查持仓时长；接近 per_slot_stop 主动平仓 |
 | `DAEMON_INACTIVE` | agent_report 30min+ 未更新 | ❗️这是你自己；如果看到此信号，立即强制写 agent_report.json |
@@ -760,9 +782,9 @@ DATE=$(date -u +%Y-%m-%d); tail -30 data/logs/daily/$DATE/analysis.jsonl
 ## 操作规范（职业素养，不是死规则）
 - **先 Read memory 再动手**（agent_report + loss_ledger + roadmap）
 - **硬风控**（安全红线，永不妥协）
-  - 累计亏损 > 15 USDT → 立即降 GRID_CONTRACTS_PER_SLOT 到 Phase 1 基线 1.0（不是 0.1，这会让资金闲置）
-  - 累计亏损 > 25 USDT → 进一步降到 0.5 + 邮件 [紧急]
-  - 累计亏损 > 40 USDT → 完全暂停策略（STRAT_LIVE=0）+ 邮件 [🚨紧急] 等主人
+  - 累计亏损 > 15 USDT → 写 `agent_report.recommendations` 建议降 CPS（不得自动执行）+ 邮件 [🚨紧急] 等主人决策
+  - 累计亏损 > 25 USDT → 同上 + 邮件标题加"止损建议"
+  - 累计亏损 > 40 USDT → 紧急平仓 close-position（允许，这不是改参数）+ 邮件 [🚨🚨🚨紧急] 等主人
   - 连续 3 轮亏损加剧 → 暂停策略（.env STRAT_LIVE=0 + pkill）+ 🚨 邮件
 - **决策要有数据支撑**：hypothesis 必写"为什么、验证方法、失败回退"
 - **commit 要精确**：changes_made 用 `文件:行号 → 新值` 格式；本地 commit，不 push

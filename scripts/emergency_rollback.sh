@@ -54,19 +54,12 @@ cd "$PROJ" 2>/dev/null || { echo "❌ 非服务器环境"; exit 1; }
     apply "GRID_TP_MULT"                   "1.5"
     apply "TAKER_GATE_MODE"                "block"  # 从 warn → block，严格阻挡
 
-    # ── P2 写 .env ground_truth（关键参数防降级）──
-    cat > data/.env_ground_truth <<EOF
-# .env 锁定参数 —— daemon 偷偷改动会被 env_guard 每 2min 恢复
-# 由 emergency_rollback.sh 生成于 $(date '+%Y-%m-%d %H:%M:%S')
-GRID_CONTRACTS_PER_SLOT=0.3
-GRID_CONTRACTS_PER_SLOT_SHORT=0.3
-GRID_LEVELS=3
-GRID_PER_SLOT_STOP_USDT=0.6
-GRID_WHOLE_STOP_USDT=3.0
-GRID_DAILY_STOP_USDT=5.0
-GRID_MIN_SPACING_PCT=0.0030
-GRID_MAX_SPACING_PCT=0.0080
-EOF
+    # ── P2 根因修复：daemon prompt 已禁止改 .env（L10-004 根治版）──
+    # 旧方案：env_guard 定时对冲（本末倒置）
+    # 新方案：prompt 铁律 "daemon 永远不得 sed .env" → 从源头杜绝
+    # 清理旧 env_guard cron 和文件
+    (crontab -l 2>/dev/null | grep -v "env_guard.sh") | crontab - 2>/dev/null || true
+    rm -f scripts/env_guard.sh data/.env_ground_truth 2>/dev/null || true
 
     # ── P3 REST 止损兜底重启（用更严版本）──
     pkill -f "rest_stop_loss" 2>/dev/null || true
@@ -82,14 +75,7 @@ EOF
     nohup .venv/bin/python -m quant.tools.loss_auto_logger --daemon \
         >> data/logs/loss_logger.log 2>&1 &
 
-    # ── P4 cron 注册 env_guard 每 2min ──
-    chmod +x scripts/env_guard.sh
-    # 清除旧的 env_guard cron 条目
-    (crontab -l 2>/dev/null | grep -v "env_guard.sh"; \
-     echo "*/2 * * * * /root/okx_eth_bot/scripts/env_guard.sh") | crontab -
-    echo "cron 注册 env_guard 每 2 分钟检查"
-
-    # ── P5 清除 Phase 升级 marker（不允许自动升）──
+    # ── P4 清除 Phase 升级 marker（不允许自动升）──
     rm -f data/.phase2_applied data/.phase3_applied data/.phase4_applied
     rm -f data/.capital_fix_applied data/.fix_all_applied
 
