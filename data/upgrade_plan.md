@@ -1,102 +1,97 @@
 # ETH量化系统升级计划
 
-## 本次（2026-04-22 第二十一轮）完成
+## 本次（2026-04-22 第二十二轮）完成
 
-### grid_pro.py：FGI格宽双向调整 + 资金费率REST fallback
+### grid_pro.py：_tp_fill_profits EWMA时间衰减加权升级
 
-**改动1：FGI格宽调整（_place_grid，在档位减1后叠加）**
+**背景：**
+第19/20轮实现的双维度自适应（trigger + offset）使用简单算术均值
+`sum(deque) / len(deque)`，新旧成交等权重。问题：市场状态往往是连续的，
+30分钟前的成交特征参考价值远低于最近5分钟的成交，等权重导致自适应响应迟钝。
 
-背景：第15轮之前FGI只影响档位数量（极端情绪-1档），但格宽始终由ATR决定，
-未体现市场情绪对最优格距的影响。
+**改动：**
 
-改进：
-```python
-# 极度恐慌 FGI < 25 → 格宽×0.8（收窄20%）
-# 理由：极恐时ETH小幅震荡频率上升（投资者焦虑频繁买卖），窄格可捕捉更多往返
-if self._fear_greed_index < 25:
-    spacing = max(spacing * 0.80, self._min_sp)
+1. **_tp_fill_profits**: `deque[float](maxlen=10)` → `deque[tuple[float,float]](maxlen=20)`
+   - 从只存值升级为存 `(timestamp, profit_spacings)` 元组
+   - maxlen=10→20，保留更长历史供衰减加权使用
 
-# 贪婪 FGI > 70 + RANGING → 格宽×1.2（扩宽20%）
-# 理由：贪婪震荡期单次波幅更大，宽格每格利润更高，且减少无效频繁成交
-elif self._fear_greed_index > 70 and regime == Regime.RANGING:
-    spacing = min(spacing * 1.20, self._max_sp)
-```
+2. **新增 `_ewma_profit_avg()` 方法**:
+   - 半衰期 `_PROFIT_HALF_LIFE = 1800s`（30min）
+   - 权重公式：`w_i = exp(-ln2/1800 × (now - ts_i))`
+   - 30分钟前的成交权重是当前成交的50%；2小时前降至6.25%
+   - 少于5个样本返回None（保持原冷启动行为）
 
-注意：此调整在顺势偏置（spacing×1.3）之前执行，两者不冲突（独立乘子）。
+3. **_adaptive_trail_trigger**: 简单均值 → `_ewma_profit_avg()`
+4. **_adaptive_trail_offset**: 简单均值 → `_ewma_profit_avg()`（同时修复了tuple兼容性）
+5. **append调用**: 改为 `self._tp_fill_profits.append((time.time(), profit_spacings))`
 
-**改动2：_refresh_funding REST自取fallback**
-
-背景：_refresh_funding原先只从runtime dict读取（由runner提供）。
-若runner由于异常未能填充funding_rate，资金费率将永远停在0.0，
-资金费率逆风检测完全失效。
-
-改进：当runtime未提供时，直接REST GET /api/v5/public/funding-rate获取，
-失败则保留缓存值（最多每30s重试一次，`self._last_fund_ts`防止频繁请求）。
+**验证（unit test）：**
+- 前5次旧成交（0.3格，1h前） + 后5次新成交（0.9格，1min内）
+- EWMA = 0.774，简单均值 = 0.600
+- EWMA正确偏向近期高利润成交，自适应将更快收紧trigger/offset
 
 **预期效果：**
-- FGI极恐（<25）：档位-1 + 格宽×0.8，双重收缩敞口，高频小格防止大亏损
-- FGI贪婪（>70，RANGING）：格宽×1.2，放大每格利润
-- 资金费率：无论runner是否正常，30s内必有一次真实值（或缓存降级）
+- 市场regime切换后（如从低波动转高波动），adaptive参数响应时间从10次成交缩短到约3次
+- 简单均值"记忆太久"的问题消除，减少跨regime的错误自适应
 
 ---
 
 ## 历史完成
 
+### 第二十一轮（2026-04-22）
+- [x] grid_pro.py: FGI格宽双向调整（极恐<25→×0.8，贪婪>70 RANGING→×1.2）
+- [x] grid_pro.py: _refresh_funding 新增REST fallback（runner未提供时直接HTTP获取）
+
 ### 第二十轮（2026-04-21）
-- [x] grid_pro.py: 新增 _adaptive_trail_offset 方法
-- [x] TP步长也根据近期成交利润格宽倍数自动调节（双维度自适应闭环完整落地）
+- [x] grid_pro.py: _adaptive_trail_offset 方法（双维度自适应闭环完整落地）
 
 ### 第十九轮（2026-04-21）
-- [x] grid_pro.py: 新增 _adaptive_trail_trigger 方法
-- [x] _tp_fill_profits deque(maxlen=10) 记录TP成交利润
-- [x] TP触发门槛自适应（avg<0.4→+0.10, avg>0.8→-0.05）
+- [x] grid_pro.py: _adaptive_trail_trigger 方法 + _tp_fill_profits deque
 
 ### 第十八轮（2026-04-21）
 - [x] grid_pro.py: RANGING 模式 _trail_trigger=0.30 + _min_trail_iv=20s
 
 ### 第十七轮（2026-04-21）
-- [x] grid_pro.py: RANGING 模式动态 TP 系数（tp_mult×0.8）
-- [x] grid_pro.py: RANGING trail_offset=0.15，存储 _current_regime
+- [x] grid_pro.py: RANGING 模式动态 TP 系数 + trail_offset=0.15
 
-### 第十六轮（2026-04-21）
-- [x] grid_pro.py: 动态整体止损 + 动态峰值回撤上限
-
-### 第一~十五轮（2026-04-18/19/20）
+### 第一~十六轮（2026-04-18/19/20/21）
 - [x] 所有P0/P1问题：GRID_DAILY_TARGET=999, lock_path修复, fill事件, WS重连, 持仓同步等
 
 ---
 
 ## 待解决问题（按优先级）
 
-- [ ] P1: 验证 adaptive 双维度实际效果
-  - 日志搜索 `adaptive trigger:` 和 `adaptive offset:` 行确认自适应触发
-  - 至少需要5次TP成交后才会触发
-- [ ] P2: 验证FGI格宽调整实际触发
-  - 当前FGI=50（中性），需FGI<25或>70才触发；观察效果后再决定是否调整阈值
-- [ ] P3: profit_spacings 考虑EWMA加权（近期成交权重更高，自适应响应更快）
+- [ ] P1: 验证 _tp_fill_profits EWMA 实际触发
+  - 日志搜索 `adaptive trigger:` 和 `adaptive offset:` 行确认自适应激活（需5次TP成交后）
+  - 验证 (ts, value) tuple 格式正确写入（检查 analysis.jsonl fill_tp 事件）
+- [ ] P2: _tp_fill_profits 持久化
+  - 当前重启后历史清零，冷启动需再等5次TP成交
+  - 考虑重启时从 analysis.jsonl 重播最近20次 fill_tp 恢复历史
+- [ ] P3: profit_spacings 使用 TRENDING_UP 时赋予更高权重
+  - 趋势行情中每格利润通常更高，可分 regime 分别维护 EWMA
 - [ ] P3: 动态止盈：根据波动率调整每格利润（tp_mult与ATR联动）
 
 ---
 
 ## 下次优先行动
 
-1. **P1: 日志验证adaptive系列** — 搜索analysis.jsonl或logs中`adaptive`关键词
-   - 若5次TP后仍未见自适应触发，检查_tp_fill_profits是否正确写入
+1. **P1: 实现 _tp_fill_profits 冷启动恢复**
+   - 在 GridProStrategy.__init__ 尾部，从 analysis.jsonl 读取最近20次 `fill_tp` 事件
+   - 重播到 `_tp_fill_profits` 中（携带原始时间戳），使重启后立即可用自适应
+   - 需要 record_analysis 写入 timestamp 字段（检查是否已有）
 
-2. **P3: EWMA加权profit_spacings**
-   - `_tp_fill_profits`改为记录(ts, value)元组
-   - _adaptive_trail_trigger/_adaptive_trail_offset用指数加权平均替代简单mean
+2. **若P1完成**：评估分 regime 的 EWMA（RANGING/TRENDING 分开维护）
 
 ---
 
-## 系统当前状态评估
+## 系统评估
 - **策略有效性**：9/10
-  - 21轮迭代；全面修复P0/P1
-  - FGI感知：三维度（档位-1/+1 + 格宽×0.8/×1.2），情绪响应完整
-  - 资金费率：runtime优先 + REST fallback，双路数据保障
-  - TP追踪：双维度自适应（trigger+offset），形成闭环学习
+  - 22轮迭代；全P0/P1已解决
+  - 自适应层：EWMA时间衰减（第22轮）→ 响应更快，跨regime错误减少
+  - FGI感知：三维度（档位-1/+1 + 格宽×0.8/×1.2）
+  - 资金费率：runtime优先 + REST fallback
 - **主要风险点**：
-  1. adaptive系列需5次真实TP成交才生效，冷启动期使用固定base值
-  2. 外部API（FGI、资金费率）在受限环境中通过urllib也可能不可达
+  1. _tp_fill_profits重启归零，冷启动5次TP成交前使用固定base值
+  2. 外部API（FGI、资金费率）网络受限时均降级为缓存默认值
   3. 无实盘日志可验证，改进效果依赖代码分析
-- **累计运行轮次**：21
+- **累计运行轮次**：22

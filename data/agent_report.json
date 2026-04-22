@@ -1,19 +1,19 @@
 {
-  "ran_at": "2026-04-22 05:00 UTC",
-  "eth_price": "N/A (API blocked)",
+  "ran_at": "2026-04-22 06:00 UTC",
+  "eth_price": "N/A (API不可达)",
   "eth_24h_change_pct": "N/A",
-  "fear_greed_index": "N/A (API blocked)",
-  "funding_rate": "N/A (API blocked)",
-  "market_summary": "外部API在本环境不可达（Host not in allowlist）。策略已内置缓存降级机制，FGI默认50（中性），资金费率默认0.0。系统继续依赖REST runtime提供数据。",
-  "decision": "实现FGI格宽双向调整（极恐×0.8收窄/贪婪RANGING×1.2扩宽），并为_refresh_funding添加REST自取fallback（当runner未提供时直接REST获取，失败保留缓存）",
+  "fear_greed_index": "N/A (API不可达，缓存默认50中性)",
+  "funding_rate": "N/A (API不可达，缓存0.0)",
+  "market_summary": "外部API均不可达（OKX、alternative.me），无法获取实时数据。系统运行在默认参数下：FGI=50中性、资金费率=0.0。待网络恢复后策略将自动拉取最新数据。",
+  "decision": "升级_tp_fill_profits为EWMA时间衰减加权（半衰期30min），近期TP成交权重指数更高；同步修复_adaptive_trail_offset使用新信号源",
   "param_changes": [],
   "code_changes": [
     {
       "file": "quant/strategy/grid_pro.py",
-      "summary": "_place_grid新增FGI格宽调整：FGI<25→spacing×0.8，FGI>70且RANGING→spacing×1.2；_refresh_funding新增REST自取fallback"
+      "summary": "新增_ewma_profit_avg方法（时间衰减EWMA，半衰期1800s）；_tp_fill_profits改存(ts,value)元组(maxlen=20)；_adaptive_trail_trigger/_adaptive_trail_offset均改用_ewma_profit_avg替代简单均值"
     }
   ],
-  "risk_notes": "外部API不可达导致FGI/资金费率只能靠runtime提供或保持默认值；REST fallback在网络受限环境会静默失败（已有try/except保护）",
-  "next_focus": "P1: 验证adaptive双维度自适应效果（日志搜索adaptive trigger/offset行）；P3: profit_spacings考虑EWMA加权替代简单平均",
-  "round_number": "21"
+  "risk_notes": "外部API不可达时FGI和资金费率依赖缓存值（默认中性），极端行情下自适应失效。adaptive系列仍需5次真实TP成交才激活。",
+  "next_focus": "验证analysis.jsonl中fill_tp事件是否正确写入；考虑为_tp_fill_profits添加持久化（重启后不丢失历史）",
+  "round_number": "22"
 }

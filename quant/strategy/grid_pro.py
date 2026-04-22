@@ -311,6 +311,7 @@ class GridProStrategy(TickStrategy):
     _FUNDING_RATE_MAX       = 0.0005 # 资金费率 > 0.05% 时抑制做多
     _STOP_COUNT_1H_LIMIT    = 3      # 1小时内触发3次止损 → 延长冷静期
     _EXTENDED_COOLDOWN      = 3600.0 # 延长冷静期 1h
+    _PROFIT_HALF_LIFE       = 1800.0 # TP利润EWMA半衰期 30min（近期成交指数权重更高）
     _MIN_EQUITY_USDT        = 15.0   # 账户权益低于此值停止一切操作
     _MAX_MARGIN_USE_PCT     = 0.70   # 最多使用 70% 账户权益做保证金
     _LIQ_WARN_DISTANCE      = 0.05   # 距爆仓价 < 5% 时告警并紧急平仓
@@ -452,7 +453,7 @@ class GridProStrategy(TickStrategy):
         self._last_stop_ts:  float = 0.0
         self._last_cooldown_log_ts: float = 0.0   # 冷静期日志节流
         self._last_tp_trail_ts: float = 0.0       # 上次 TP 追踪时间（节流用）
-        self._tp_fill_profits: deque[float] = deque(maxlen=10)  # 近10次TP成交利润（格宽倍数）
+        self._tp_fill_profits: deque[tuple[float, float]] = deque(maxlen=20)  # (ts, profit_spacings)，EWMA加权
         self._emergency_closing: bool = False
 
         # 止损计数（1h 窗口）
@@ -1355,8 +1356,26 @@ class GridProStrategy(TickStrategy):
                         self._tp_placed_ts = now   # 重置超时计时器：市场上行时不应过早触发止损
                     self._last_tp_trail_ts = now   # 无论成功与否都更新节流时间戳
 
+    def _ewma_profit_avg(self) -> float | None:
+        """时间衰减加权 EWMA：近期 TP 利润格宽倍数，半衰期 30min。
+
+        权重 w_i = exp(-λ·(t_now - t_i))，λ = ln2 / half_life。
+        比简单均值更响应最近成交，5次以下数据时返回 None。
+        """
+        if len(self._tp_fill_profits) < 5:
+            return None
+        lam = math.log(2.0) / self._PROFIT_HALF_LIFE
+        now = time.time()
+        total_w = 0.0
+        total_wv = 0.0
+        for ts, v in self._tp_fill_profits:
+            w = math.exp(-lam * max(0.0, now - ts))
+            total_w += w
+            total_wv += w * v
+        return total_wv / total_w if total_w > 0.0 else None
+
     def _adaptive_trail_trigger(self, base_trigger: float) -> float:
-        """根据近期TP成交利润（格宽倍数）动态调整追踪触发门槛。
+        """根据近期TP成交利润（格宽倍数，EWMA加权）动态调整追踪触发门槛。
 
         metric: profit_spacings = abs(fill_px - vwap) / spacing
           < 0.4格均值 → TP 锁利太少（trigger 触发太早/offset 太紧）→ 放宽 trigger +0.10
@@ -1366,9 +1385,9 @@ class GridProStrategy(TickStrategy):
         至少需要 5 次成交数据才启用自适应，否则直接返回 base。
         调整幅度有界：[0.20, 0.50]，不超出合理范围。
         """
-        if len(self._tp_fill_profits) < 5:
+        avg = self._ewma_profit_avg()
+        if avg is None:
             return base_trigger
-        avg = sum(self._tp_fill_profits) / len(self._tp_fill_profits)
         if avg < 0.4:
             adapted = min(base_trigger + 0.10, 0.50)
         elif avg > 0.8:
@@ -1383,7 +1402,7 @@ class GridProStrategy(TickStrategy):
         return adapted
 
     def _adaptive_trail_offset(self, base_offset: float) -> float:
-        """根据近期TP成交利润（格宽倍数）动态调整追踪步长（trail_offset）。
+        """根据近期TP成交利润（格宽倍数，EWMA加权）动态调整追踪步长（trail_offset）。
 
         metric: profit_spacings = abs(fill_px - vwap) / spacing
           < 0.30格均值 → 利润偏低（offset 太紧，TP 离市价太近）→ 放宽 +0.03
@@ -1392,11 +1411,11 @@ class GridProStrategy(TickStrategy):
 
         至少需要 5 次成交数据才启用自适应，否则直接返回 base。
         调整幅度有界：[0.08, 0.35]，防止极端飘移。
-        与 _adaptive_trail_trigger 共用同一信号源（_tp_fill_profits）形成双维度闭环。
+        与 _adaptive_trail_trigger 共用 _ewma_profit_avg 信号源（EWMA双维度闭环）。
         """
-        if len(self._tp_fill_profits) < 5:
+        avg = self._ewma_profit_avg()
+        if avg is None:
             return base_offset
-        avg = sum(self._tp_fill_profits) / len(self._tp_fill_profits)
         if avg < 0.30:
             adapted = min(base_offset + 0.03, 0.35)
         elif avg > 0.80:
@@ -1593,11 +1612,11 @@ class GridProStrategy(TickStrategy):
                         contracts=s.fill_sz,
                         exit_reason="tp",
                     )
-            # 记录本次 TP 利润（格宽倍数），供 _adaptive_trail_trigger 使用
+            # 记录本次 TP 利润（格宽倍数 + 时间戳），供 _adaptive_trail_trigger EWMA 使用
             if self._grid_spacing > 0 and self._vwap > 0:
                 spacing_abs = self._grid_spacing * self._vwap
                 profit_spacings = abs(fill_px - self._vwap) / spacing_abs
-                self._tp_fill_profits.append(profit_spacings)
+                self._tp_fill_profits.append((time.time(), profit_spacings))
             log.info(
                 "[grid] TP 成交 @%.2f sz=%.1f net=%.4f USDT | 日累计=%.4f USDT",
                 fill_px, actual_fill, total_net, self._pnl.realized,
