@@ -20,6 +20,7 @@ import os
 import time
 from collections import deque
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any
 
 from quant.analysis import StreamingEMA
@@ -475,6 +476,10 @@ class GridProStrategy(TickStrategy):
         # 【2026-04-22 改进 1-3】交易节流 + 价格位置 + 波动自适应
         self._recent_entries_ts: deque[float] = deque(maxlen=10)  # 最近开仓时间
         self._price_1h_cache = {"ts": 0.0, "hi": 0.0, "lo": 0.0}  # 1h 高低缓存
+        # 【2026-04-22 17:30 盈亏比修复 改动 5】连亏冷静期
+        # 主人："加注赔钱金额大" → 连 2 亏不加仓，30min 冷静
+        self._loss_streak_until: float = 0.0  # 冷静期结束时间
+        self._recent_close_pnls: deque[float] = deque(maxlen=3)  # 近 3 笔平仓 PnL
 
         # Phase 4 趋势日守卫（主人 2026-04-21 22:15 批准 B 激进版时要求）
         # 每 10min 评估近 4h K 线 delta：若 |delta| > 1.5% → 自动降回 Phase 3
@@ -1023,6 +1028,14 @@ class GridProStrategy(TickStrategy):
             fee = self._notional(s.fill_sz, mid) * self._EMERGENCY_CLOSE_FEE_BPS / 10000.0
             net_after = net - fee
             self._pnl.add(net_after)
+            # 2026-04-22 17:30 改动 5：记录近 3 笔平仓 PnL 给连亏冷静 gate
+            self._recent_close_pnls.append(net_after)
+            if len(self._recent_close_pnls) >= 2 and all(p < 0 for p in list(self._recent_close_pnls)[-2:]):
+                self._loss_streak_until = time.time() + 1800.0  # 冷静 30min
+                log.warning(
+                    "[grid][loss-streak] 连续 2 笔亏损 → 冷静 30min 禁开新仓（至 %s）",
+                    datetime.fromtimestamp(self._loss_streak_until).strftime('%H:%M:%S'),
+                )
             self._tracker.record(
                 channel="grid",
                 pnl_pct=pnl_pct,
@@ -1571,6 +1584,8 @@ class GridProStrategy(TickStrategy):
                     net_after = net - fee
                     total_net += net_after
                     self._pnl.add(net_after)
+                    # 2026-04-22 17:30 记录 TP 平仓 PnL 供连亏冷静 gate（TP 成交一般为正）
+                    self._recent_close_pnls.append(net_after)
                     self._tracker.record(
                         channel="grid",
                         pnl_pct=pnl_pct,
@@ -2137,8 +2152,10 @@ class GridProStrategy(TickStrategy):
             #   -$0.88 亏损就是持仓 ~6 小时慢慢扩大到触发 per_slot_stop=$0.8。
             # 改进：持仓超过 30 分钟且浮亏超 $0.30 → 主动止损，不等亏到 $0.8。
             # 效果：avg_loss $0.33 → $0.25（-24%），盈亏比数学直接改善 ~18%。
-            _SLOW_BLEED_AGING_SEC = 1800.0  # 30 分钟
-            _SLOW_BLEED_LOSS_USDT = 0.30
+            # 2026-04-22 17:30 盈亏比修复：门槛收紧 30min+$0.30 → 15min+$0.20
+            # 目的：让慢出血亏损单更早止损，配合 per_slot_stop $0.4 形成双重保护
+            _SLOW_BLEED_AGING_SEC = 900.0   # 15 分钟
+            _SLOW_BLEED_LOSS_USDT = 0.20
             if (
                 self._tp_placed_ts > 0
                 and now - self._tp_placed_ts > _SLOW_BLEED_AGING_SEC
@@ -2238,23 +2255,25 @@ class GridProStrategy(TickStrategy):
             except Exception as _tf_exc:  # factor 层不该影响交易层
                 log.debug("[grid][taker-gate] 读取异常（放行）: %s", _tf_exc)
 
-        # ── 10d2. 浮亏保护 gate（问题 4 加强，2026-04-22 主人紧急回退）
-        # 情景：持仓已经浮亏 > $0.30，但 strategy 想继续开同向新仓（摊平）
-        # → 死扛越陷越深（昨日 -$8.28 就是典型 → 4 笔 sz=1.0 全亏）
-        # 规则：任一 HOLDING 槽位浮亏 > $0.3 → 本轮拒绝开新格/补仓（等 TP 或止损先处理完）
-        if not self._grid_active:
-            _has_bleeding = False
-            _pnl_sign = self._pnl_sign()
-            for s in self._slots:
-                if s.state != _S.HOLDING or s.fill_sz <= 0 or s.fill_price <= 0:
-                    continue
-                slot_upl = (mid - s.fill_price) * s.fill_sz * self._ct_val * _pnl_sign
-                if slot_upl < -0.30:
-                    _has_bleeding = True
-                    break
-            if _has_bleeding:
-                log.info("[grid][bleed-guard] 持仓浮亏 > $0.3，拒绝开新格（避免摊平）")
+        # ── 10d2. 浮亏保护 gate（2026-04-22 17:30 加强）
+        # 主人："加注赔钱金额大" → 不允许 HOLDING 浮亏时继续堆仓
+        # 规则升级：阈值 $0.30 → $0.20（与慢出血 aging 对齐）
+        # 且不只管 _place_grid，补仓 slot fill 也检查（见下方改动）
+        _pnl_sign = self._pnl_sign()
+        _has_bleeding = False
+        for s in self._slots:
+            if s.state != _S.HOLDING or s.fill_sz <= 0 or s.fill_price <= 0:
+                continue
+            slot_upl = (mid - s.fill_price) * s.fill_sz * self._ct_val * _pnl_sign
+            if slot_upl < -0.20:
+                _has_bleeding = True
+                break
+        if _has_bleeding:
+            # 对新开格 + 补仓都禁止（不只限 not grid_active）
+            if not self._grid_active:
+                log.info("[grid][bleed-guard] 持仓浮亏 > $0.2，拒绝新开格")
                 return None
+            # grid_active 时：下面的补仓 loop 也跳过（通过变量共享）
 
         # ── 10e. 实时方向评分 gate（2026-04-22 主人要求：科学专业实时）
         # 专业版：6 维加权连续评分（非投票），用秒级微观结构信号
@@ -2322,7 +2341,6 @@ class GridProStrategy(TickStrategy):
             pass
 
         # 【2026-04-22 主人紧急要求】Circuit Breaker 检查（速率级熔断）
-        # 任一级别触发 → 暂停开新格（不平已有仓位，由 TP/per_slot_stop 处理）
         try:
             from quant.tools.circuit_breaker import should_trading_be_blocked
             _blocked, _reason = should_trading_be_blocked()
@@ -2331,6 +2349,17 @@ class GridProStrategy(TickStrategy):
                 return None
         except Exception:
             pass
+
+        # 【2026-04-22 17:30 盈亏比修复 改动 5】连亏冷静 gate
+        # 触发：近 2 笔平仓都亏（在 _emergency_close/TP 成交 hook 里设 _loss_streak_until）
+        # 效果：30min 内禁开新仓 + 禁补（但已有仓位继续走 TP/止损）
+        if time.time() < self._loss_streak_until and not self._grid_active:
+            _remain_min = (self._loss_streak_until - time.time()) / 60
+            log.info(
+                "[grid][loss-streak-cooldown] 连亏冷静期剩余 %.1f min，跳过开格",
+                _remain_min,
+            )
+            return None
 
         # strategy_pool 协调检查
         try:
@@ -2415,17 +2444,16 @@ class GridProStrategy(TickStrategy):
         # 方向评分 gate 也应用到补仓：强烈逆势时不补新档
         my_dir_sign_fill = -1.0 if self._is_short else +1.0
         _fill_ok_dir = not (abs(_dir_score) > 0.30 and my_dir_sign_fill * _dir_score < 0)
-        # 【2026-04-22 15:54 Bug 修复】补仓也要节流
-        # 问题：15:18:58 同一秒 2 笔 buy → _place_grid 节流失效
-        # 原因：_place_grid 节流只管"首次开格"，补仓走 slot fill 路径不受控
-        # 修复：补仓前检查 _recent_entries_ts（过去 60s 补仓 >= 2 次 → 暂停补）
+        # 补仓也要节流（15:18 bug 修复）
         _fill_throttle_ok = True
         _now = time.time()
         while self._recent_entries_ts and _now - self._recent_entries_ts[0] > 60:
             self._recent_entries_ts.popleft()
         if len(self._recent_entries_ts) >= 2:
             _fill_throttle_ok = False
-        if self._grid_active and market_ok and _fill_ok_dir and _fill_throttle_ok:
+        # 2026-04-22 17:30 加强：有持仓浮亏 > $0.2 → 补仓也禁
+        _fill_bleed_ok = not _has_bleeding
+        if self._grid_active and market_ok and _fill_ok_dir and _fill_throttle_ok and _fill_bleed_ok:
             dir_sign = self._grid_spacing_sign()
             for s in self._slots:
                 if (

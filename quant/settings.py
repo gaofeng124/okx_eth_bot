@@ -919,13 +919,15 @@ LEV5_FUNDING_BASIS_FR_SCALE = D.LEV5_FUNDING_BASIS_FR_SCALE
 _LOCKED_GRID = {
     "GRID_CONTRACTS_PER_SLOT":       1.0,      # 主人要求 "最少得 1"
     "GRID_CONTRACTS_PER_SLOT_SHORT": 1.0,
-    "GRID_LEVELS":                   3,         # 保守档位，观察后再升
-    "GRID_PER_SLOT_STOP_USDT":       0.8,      # sz=1 时合理严格
+    "GRID_LEVELS":                   3,
+    # 2026-04-22 17:30 盈亏比结构性修复（主人要求"加注赔钱金额大，收益金额小"）
+    # avg_loss $0.8 是 avg_win $0.21 的 3.8 倍，盈亏比 0.26 数学必亏
+    "GRID_PER_SLOT_STOP_USDT":       0.4,      # 0.8 → 0.4 砍半，avg_loss $0.8→$0.4
     "GRID_WHOLE_STOP_USDT":          5.0,
     "GRID_DAILY_STOP_USDT":          8.0,
     "GRID_MIN_SPACING_PCT":          0.0030,
     "GRID_MAX_SPACING_PCT":          0.0080,
-    "GRID_TP_MULT":                  1.5,
+    "GRID_TP_MULT":                  2.0,       # 1.5 → 2.0 拉大 avg_win $0.21→$0.30
     "GRID_LEVERAGE":                 10.0,
     "GRID_DRAWDOWN_FROM_PEAK_USDT":  6.0,
 }
