@@ -108,6 +108,12 @@ restart_system() {
         >> "$PROJECT_DIR/data/logs/circuit_breaker.log" 2>&1 &
     log ">>> circuit_breaker PID=$!"
 
+    # 执行质量采集（为明天白皮书分析用）
+    pkill -f "fill_quality_logger" 2>/dev/null || true
+    nohup "$VENV_PYTHON" -m quant.tools.fill_quality_logger --daemon \
+        >> "$PROJECT_DIR/data/logs/fill_quality.log" 2>&1 &
+    log ">>> fill_quality_logger PID=$!"
+
     # 关闭（不启动）：mean_reversion_watcher / funding_arb_watcher / cross_asset_signal
     pkill -f "mean_reversion_watcher" 2>/dev/null || true
     pkill -f "funding_arb_watcher" 2>/dev/null || true
