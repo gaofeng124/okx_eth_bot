@@ -1,19 +1,19 @@
 {
-  "ran_at": "2026-04-23 10:00 UTC",
+  "ran_at": "2026-04-23 11:00 UTC",
   "eth_price": "N/A (网络受限)",
   "eth_24h_change_pct": "N/A",
   "fear_greed_index": "N/A (API不可达)",
   "funding_rate": "N/A",
-  "market_summary": "外部API网络受限，无法获取实时行情。代码审查发现第25轮修复方向A/B引入了隐蔽的边界裁剪bug，本轮专项修复。",
-  "decision": "修复_adaptive_trail_trigger/_adaptive_trail_offset的边界裁剪bug：旧边界[0.20,0.50]/[0.08,0.35]与新base值1.00/1.20和0.50/0.60不匹配，avg<0.4时trigger被错误压到0.50（应为~1.10），完全无效化了第25轮修复；新增is_ranging参数实现Regime独立边界",
+  "market_summary": "外部API网络受限，无法获取实时行情。系统持续运行中，根据P3优先级执行_atr_baseline持久化改进，确保重启后ATR联动立即可用。",
+  "decision": "实现_atr_baseline持久化：新增_save_atr_baseline()/\\_restore_atr_baseline()方法，重启后从grid_atr_state.json立即恢复ATR基线，无需等待20次_place_grid调用；节流5分钟写一次，12小时超时自动忽略",
   "param_changes": [],
   "code_changes": [
     {
       "file": "quant/strategy/grid_pro.py",
-      "summary": "_adaptive_trail_trigger/_adaptive_trail_offset加is_ranging参数，边界从共享[0.20,0.50]/[0.08,0.35]改为Regime独立：RANGING[0.85,1.20]/[0.35,0.65]，TRENDING[1.00,1.50]/[0.45,0.75]；同时更新_maybe_trail_tp调用处传入_is_ranging"
+      "summary": "新增_save_atr_baseline()/\\_restore_atr_baseline()方法+_last_atr_save_ts节流字段：_place_grid更新_atr_baseline后节流保存到data/grid_atr_state.json；__init__在_replay_tp_history之后调用_restore_atr_baseline恢复，日志输出atr_baseline值和文件年龄"
     }
   ],
-  "risk_notes": "修复前：每当EWMA TP利润低于0.4格时，trigger被剪到0.50（远低于1.00设计值），TP追踪提前触发，再次产生偷盈利问题。修复后边界与base值匹配，自适应在合理范围内工作。",
-  "next_focus": "P3: _atr_baseline持久化——在grid_session.json中保存/恢复_atr_baseline，避免每次重启后冷启动期ATR联动失效",
-  "round_number": "26"
+  "risk_notes": "外部API持续不可达（OKX/FGI），无法验证实盘运行状态和实际成交数据；_atr_baseline首次启动时仍需至少1次_place_grid调用才能初始化，之后持久化生效",
+  "next_focus": "P3: 验证第26轮adaptive边界修复实际效果——日志搜索 'adaptive trigger: base=... bounds=[0.85,1.20]' 或 '[1.00,1.50]'，确认avg<0.4时trigger不再被剪到0.50",
+  "round_number": "27"
 }

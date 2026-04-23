@@ -459,6 +459,7 @@ class GridProStrategy(TickStrategy):
         self._tp_profits_trending: deque[tuple[float, float]] = deque(maxlen=20)
         # ATR 基线：慢速 EMA（α=0.05）追踪"正常"格宽水平，供 _update_tp 做动态 TP 距离缩放
         self._atr_baseline: float = 0.0
+        self._last_atr_save_ts: float = 0.0   # 节流：最多每5分钟保存一次
         self._emergency_closing: bool = False
 
         # 止损计数（1h 窗口）
@@ -501,6 +502,9 @@ class GridProStrategy(TickStrategy):
 
         # 冷启动 TP 历史恢复（使 EWMA 自适应重启后立即可用，无需等待5次新成交）
         self._replay_tp_history()
+
+        # ATR 基线恢复（避免重启后冷启动期20次_place_grid调用无ATR联动）
+        self._restore_atr_baseline()
 
         # 关键风控配置一次性打印（便于日志核对）
         log.info(
@@ -1159,6 +1163,7 @@ class GridProStrategy(TickStrategy):
             self._atr_baseline = spacing
         else:
             self._atr_baseline = 0.05 * spacing + 0.95 * self._atr_baseline
+        self._save_atr_baseline()  # 节流持久化，重启后立即恢复
 
         # 资金费率逆风检测：
         #   long:  funding < -0.0003（空头溢价）→ 不利
@@ -1477,6 +1482,43 @@ class GridProStrategy(TickStrategy):
             " 即时可用" if n_r >= 5 else " 待更多成交",
             " 即时可用" if n_t >= 5 else " 待更多成交",
         )
+
+    def _save_atr_baseline(self) -> None:
+        """节流保存 _atr_baseline 到 data/grid_atr_state.json（最多每5分钟一次）。"""
+        import json as _json
+        now = time.time()
+        if now - self._last_atr_save_ts < 300.0:
+            return
+        self._last_atr_save_ts = now
+        try:
+            from pathlib import Path as _Path
+            state_path = _Path(self._data_dir) / "grid_atr_state.json"
+            state_path.parent.mkdir(parents=True, exist_ok=True)
+            with state_path.open("w") as f:
+                _json.dump({"atr_baseline": self._atr_baseline, "saved_ts": now}, f)
+        except Exception as e:
+            log.warning("[grid] 保存 atr_baseline 失败，忽略: %s", e)
+
+    def _restore_atr_baseline(self) -> None:
+        """启动时从 data/grid_atr_state.json 恢复 _atr_baseline（文件超过12h则忽略）。"""
+        import json as _json
+        try:
+            from pathlib import Path as _Path
+            state_path = _Path(self._data_dir) / "grid_atr_state.json"
+            if not state_path.exists():
+                return
+            with state_path.open() as f:
+                data = _json.load(f)
+            age_h = (time.time() - data.get("saved_ts", 0)) / 3600.0
+            if age_h > 12.0:
+                log.info("[grid] grid_atr_state.json 已过期 (%.1fh)，不恢复 atr_baseline", age_h)
+                return
+            val = float(data.get("atr_baseline", 0.0))
+            if val > 0.0:
+                self._atr_baseline = val
+                log.info("[grid] 恢复 atr_baseline=%.6f（%.1fh前保存），ATR联动立即可用", val, age_h)
+        except Exception as e:
+            log.warning("[grid] 恢复 atr_baseline 失败，忽略: %s", e)
 
     def _adaptive_trail_trigger(self, base_trigger: float, is_ranging: bool) -> float:
         """根据近期TP成交利润（格宽倍数，EWMA加权）动态调整追踪触发门槛。

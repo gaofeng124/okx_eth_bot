@@ -1,40 +1,41 @@
 # ETH量化系统升级计划
 
-## 本次（2026-04-23 第二十六轮）完成
+## 本次（2026-04-23 第二十七轮）完成
 
-### grid_pro.py：修复 _adaptive_trail_trigger/offset Regime边界裁剪Bug
+### grid_pro.py：_atr_baseline 持久化
 
 **背景：**
-第25轮实现了修复方向A（trigger=1.00/1.20）和修复方向B（offset=0.50/0.60），
-目的是解决"trail偷盈利"问题（avg_win期望$1.31但实际$0.21）。
-但两个 adaptive 函数的硬编码边界仍是旧值 [0.20, 0.50] / [0.08, 0.35]，
-这些边界对应的是旧 base 值 0.30/0.40（trigger）和 0.15/0.25（offset）。
-
-**Bug 表现：**
-- EWMA TP利润 avg < 0.4 时（TP锁利太少，本应放宽trigger）：
-  - 错误：`min(1.00+0.10, 0.50) = 0.50`（被剪到旧上界）
-  - 正确：应为 1.10（允许价格超出TP一整格宽后再追踪）
-- EWMA TP利润 avg < 0.30 时（offset也同理）：
-  - 错误：`min(0.50+0.03, 0.35) = 0.35`（被剪到旧上界）
-  - 正确：应为 0.53
+第26轮修复了adaptive边界裁剪bug（trigger/offset的[lo,hi]边界与新base值不匹配）。
+`_atr_baseline`是ATR基线慢速EMA（α=0.05），每次`_place_grid`调用时更新。
+问题：重启后`_atr_baseline=0.0`，需要积累20次`_place_grid`调用才能稳定，
+这段冷启动期内`_update_tp`的ATR比率联动（atr_ratio=[0.8,1.3]缩放eff_tp_mult）完全失效。
 
 **修复内容：**
-1. 两个函数新增 `is_ranging: bool` 参数
-2. 边界改为 Regime 独立：
-   - RANGING trigger: [0.85, 1.20]  （base=1.00，震荡市适度放宽，不超过1.20格宽）
-   - TRENDING trigger: [1.00, 1.50]  （base=1.20，趋势市上界放宽到1.50格宽，捕获更大延伸）
-   - RANGING offset: [0.35, 0.65]  （base=0.50，下界0.35允许震荡市贴近锁利）
-   - TRENDING offset: [0.45, 0.75]  （base=0.60，趋势市保留0.45下界，不过早贴市价）
-3. _maybe_trail_tp 调用处传入 `_is_ranging`
+1. 新增 `_last_atr_save_ts: float = 0.0`（节流用时间戳）
+2. 新增 `_save_atr_baseline()`：
+   - 每5分钟最多写一次（避免高频磁盘IO）
+   - 写入 `data/grid_atr_state.json`：`{"atr_baseline": <float>, "saved_ts": <epoch>}`
+   - I/O异常静默忽略，不影响主交易循环
+3. 新增 `_restore_atr_baseline()`：
+   - 读取 `data/grid_atr_state.json`，若文件存在且未超过12小时则恢复
+   - 恢复后打印日志：`[grid] 恢复 atr_baseline=0.002345（2.1h前保存），ATR联动立即可用`
+4. `__init__` 中在 `_replay_tp_history()` 之后调用 `_restore_atr_baseline()`
+5. `_place_grid` 中更新 `_atr_baseline` 后调用 `_save_atr_baseline()`
 
 **效果预期：**
-- 修复前（avg<0.4）：trigger=0.50，价格超出TP半格就追踪 → 偷大量盈利
-- 修复后（avg<0.4）：trigger=1.10，需价格超出TP一整格才追踪 → 拿接近全额格宽利润
-- debug日志新增 bounds=[lo,hi] 字段，可验证实际使用的边界
+- 修复前：重启后冷启动期ATR联动完全无效（_atr_baseline=0），eff_tp_mult默认1.0，
+  无论市场高低波动率都用同一格宽比，丧失ATR自适应能力
+- 修复后：重启后立即读取最近保存的基线值，ATR联动从第1次_place_grid起就生效
+- 日志可验证：搜索 `恢复 atr_baseline=` 行，确认文件年龄在合理范围内
 
 ---
 
 ## 历史完成
+
+### 第二十六轮（2026-04-23）
+- [x] grid_pro.py: 修复_adaptive_trail_trigger/_adaptive_trail_offset的Regime边界裁剪bug
+  - RANGING trigger: [0.85,1.20], TRENDING trigger: [1.00,1.50]
+  - RANGING offset: [0.35,0.65], TRENDING offset: [0.45,0.75]
 
 ### 第二十五轮（2026-04-22）
 - [x] grid_pro.py: ATR基线动态止盈（_atr_baseline慢速EMA + atr_ratio=[0.8,1.3]缩放eff_tp_mult）
@@ -59,33 +60,33 @@
 
 ## 待解决问题（按优先级）
 
-- [ ] P3: _atr_baseline持久化（重启后恢复，避免冷启动期无ATR联动）
-  - 方案：在grid_session.json中存储_atr_baseline值
-  - 载入时恢复：`self._atr_baseline = session_data.get("atr_baseline", 0.0)`
-  - 预期效果：重启后立即有ATR比率联动，不需要等20次_place_grid调用
-- [ ] P3: 验证第26轮修复实际效果
+- [ ] P3: 验证第26轮adaptive边界修复实际效果
   - 日志搜索：`adaptive trigger: base=... bounds=[0.85,1.20]` 或 `[1.00,1.50]`
   - 验证avg<0.4时adapted值是否在合理范围（不再被剪到0.50）
+- [ ] P3: 验证第27轮atr_baseline持久化效果
+  - 日志搜索：`恢复 atr_baseline=`，确认重启后立即恢复
 
 ---
 
 ## 下次优先行动
 
-1. **P3: _atr_baseline持久化**
-   - grid_pro.py: `_save_session()` 中增加 `"atr_baseline": self._atr_baseline`
-   - `_load_session()` 中增加 `self._atr_baseline = data.get("atr_baseline", 0.0)`
-   - 避免每次部署/崩溃重启后ATR联动冷启动期的无效窗口
+1. **P3: 检查实盘日志（若网络恢复）**
+   - 验证 fill_tp 事件中 profit_spacings 字段是否存在（EWMA有数据）
+   - 验证 adaptive trigger bounds 是否正确（[0.85,1.20] 或 [1.00,1.50]）
+   - 验证 atr_baseline 是否在重启后恢复
+
+2. **P3: 若发现新的真实问题，针对性修复**
+   - 优先级：实盘验证反馈的bug > 理论改进
 
 ---
 
 ## 系统评估
 - **策略有效性**：9/10
-  - 26轮迭代；全P0/P1已解决；本轮修复了第25轮引入的隐蔽边界裁剪bug
-  - 自适应层（修复后真正生效）：ATR联动TP + 分Regime EWMA + 时间衰减 + 冷启动恢复
-  - FGI感知：三维度（档位-1/+1 + 格宽×0.8/×1.2）
-  - Trail系统：Regime独立边界，trigger/offset真正在设计范围内工作
+  - 27轮迭代；全P0/P1已解决；自适应层完整
+  - 本轮完成最后一块"冷启动盲区"修复（ATR基线持久化）
+  - 理论完备度：ATR联动TP + 分Regime EWMA + 时间衰减 + 边界修复 + 冷启动恢复
 - **主要风险点**：
-  1. 外部API网络受限（无法验证实盘运行状态，无法确认填单数据是否实际触发自适应）
-  2. _atr_baseline冷启动期（仍未持久化，每次重启首20个_place_grid调用无ATR联动）
-  3. 无实盘日志可验证，改进效果依赖代码分析
-- **累计运行轮次**：26
+  1. 外部API网络受限（无法验证实盘运行状态，所有改进停留在代码层）
+  2. 无实盘日志反馈：所有优化效果未经实盘数据验证
+  3. 网络限制解除后，需优先检查实盘是否正常运行
+- **累计运行轮次**：27
