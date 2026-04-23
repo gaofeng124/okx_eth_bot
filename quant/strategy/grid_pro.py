@@ -460,6 +460,7 @@ class GridProStrategy(TickStrategy):
         # ATR 基线：慢速 EMA（α=0.05）追踪"正常"格宽水平，供 _update_tp 做动态 TP 距离缩放
         self._atr_baseline: float = 0.0
         self._last_atr_save_ts: float = 0.0   # 节流：最多每5分钟保存一次
+        self._last_eff_tp_mult: float = 1.0   # _update_tp最近一次有效乘数（fill_tp诊断用）
         self._emergency_closing: bool = False
 
         # 止损计数（1h 窗口）
@@ -1309,6 +1310,7 @@ class GridProStrategy(TickStrategy):
                 "[grid] ATR联动 TP: spacing=%.5f baseline=%.5f ratio=%.3f eff_mult=%.3f",
                 self._grid_spacing, self._atr_baseline, _atr_ratio, _eff_tp_mult,
             )
+        self._last_eff_tp_mult = _eff_tp_mult  # 缓存供 fill_tp 事件诊断
         tp = self._vwap * (1.0 + tp_sign * self._grid_spacing * _eff_tp_mult)
         self._tp_price = tp
         oid = self._place_tp(self._total_held, tp)
@@ -1784,6 +1786,9 @@ class GridProStrategy(TickStrategy):
                     entry_vwap=self._vwap,
                     profit_spacings=_ps,
                     regime=self._current_regime.value,
+                    grid_spacing_bps=round(self._grid_spacing * 10000, 2),
+                    atr_baseline_bps=round(self._atr_baseline * 10000, 2),
+                    eff_tp_mult=round(self._last_eff_tp_mult, 3),
                 )
             except Exception:
                 pass
@@ -1854,7 +1859,8 @@ class GridProStrategy(TickStrategy):
                     self._fear_greed_index, d["value_classification"],
                 )
         except Exception as e:
-            log.debug("[grid] 恐贪指数获取失败（保留缓存值 %d）: %s", self._fear_greed_index, e)
+            self._last_fgi_ts = now - 3300.0  # 失败后5min重试（而非等1小时）
+            log.debug("[grid] 恐贪指数获取失败（缓存%d，5min后重试）: %s", self._fear_greed_index, e)
 
     # ══════════════════════════════════════════════════════════════════════════
     # Phase 4 趋势日守卫（主人 2026-04-21 22:15 批准 B 激进版）

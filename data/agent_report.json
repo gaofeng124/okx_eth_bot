@@ -1,19 +1,19 @@
 {
-  "ran_at": "2026-04-23 11:00 UTC",
-  "eth_price": "N/A (网络受限)",
-  "eth_24h_change_pct": "N/A",
-  "fear_greed_index": "N/A (API不可达)",
-  "funding_rate": "N/A",
-  "market_summary": "外部API网络受限，无法获取实时行情。系统持续运行中，根据P3优先级执行_atr_baseline持久化改进，确保重启后ATR联动立即可用。",
-  "decision": "实现_atr_baseline持久化：新增_save_atr_baseline()/\\_restore_atr_baseline()方法，重启后从grid_atr_state.json立即恢复ATR基线，无需等待20次_place_grid调用；节流5分钟写一次，12小时超时自动忽略",
+  "ran_at": "2026-04-23 12:00 UTC",
+  "eth_price": "N/A（外网受限）",
+  "eth_24h_change_pct": "N/A（外网受限）",
+  "fear_greed_index": "N/A（外网受限）",
+  "funding_rate": "N/A（外网受限）",
+  "market_summary": "外部API全部不可达，无法获取实时行情。系统参数健康：GRID_DAILY_TARGET=999, BOT_MAX_SESSION=24h, GRID_DRAWDOWN_FROM_PEAK=6.0（locked），lock_path已修复。27轮改进全部到位。",
+  "decision": "第28轮：(1)_refresh_fgi失败后改为5分钟重试（原1小时），网络恢复后更快同步FGI；(2)_update_tp缓存_last_eff_tp_mult；(3)fill_tp事件新增grid_spacing_bps/atr_baseline_bps/eff_tp_mult字段，可离线验证ATR联动效果",
   "param_changes": [],
   "code_changes": [
     {
       "file": "quant/strategy/grid_pro.py",
-      "summary": "新增_save_atr_baseline()/\\_restore_atr_baseline()方法+_last_atr_save_ts节流字段：_place_grid更新_atr_baseline后节流保存到data/grid_atr_state.json；__init__在_replay_tp_history之后调用_restore_atr_baseline恢复，日志输出atr_baseline值和文件年龄"
+      "summary": "_refresh_fgi失败回退5min重试；_update_tp缓存_last_eff_tp_mult；fill_tp增加ATR诊断字段"
     }
   ],
-  "risk_notes": "外部API持续不可达（OKX/FGI），无法验证实盘运行状态和实际成交数据；_atr_baseline首次启动时仍需至少1次_place_grid调用才能初始化，之后持久化生效",
-  "next_focus": "P3: 验证第26轮adaptive边界修复实际效果——日志搜索 'adaptive trigger: base=... bounds=[0.85,1.20]' 或 '[1.00,1.50]'，确认avg<0.4时trigger不再被剪到0.50",
-  "round_number": "27"
+  "risk_notes": "外部API网络受限，所有改进停留在代码层面，无法验证实盘运行状态。需要网络恢复后确认实盘是否正常运行。",
+  "next_focus": "验证实盘日志：1) fill_tp事件中是否有grid_spacing_bps/eff_tp_mult字段 2) FGI是否在网络恢复后5分钟内更新 3) atr_baseline是否在重启后正确恢复",
+  "round_number": 28
 }

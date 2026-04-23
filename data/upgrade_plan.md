@@ -1,41 +1,43 @@
 # ETH量化系统升级计划
 
-## 本次（2026-04-23 第二十七轮）完成
+## 本次（2026-04-23 第二十八轮）完成
 
-### grid_pro.py：_atr_baseline 持久化
+### grid_pro.py：三项改进
 
-**背景：**
-第26轮修复了adaptive边界裁剪bug（trigger/offset的[lo,hi]边界与新base值不匹配）。
-`_atr_baseline`是ATR基线慢速EMA（α=0.05），每次`_place_grid`调用时更新。
-问题：重启后`_atr_baseline=0.0`，需要积累20次`_place_grid`调用才能稳定，
-这段冷启动期内`_update_tp`的ATR比率联动（atr_ratio=[0.8,1.3]缩放eff_tp_mult）完全失效。
+**1. `_refresh_fgi` 失败后5分钟重试（原1小时）**
 
-**修复内容：**
-1. 新增 `_last_atr_save_ts: float = 0.0`（节流用时间戳）
-2. 新增 `_save_atr_baseline()`：
-   - 每5分钟最多写一次（避免高频磁盘IO）
-   - 写入 `data/grid_atr_state.json`：`{"atr_baseline": <float>, "saved_ts": <epoch>}`
-   - I/O异常静默忽略，不影响主交易循环
-3. 新增 `_restore_atr_baseline()`：
-   - 读取 `data/grid_atr_state.json`，若文件存在且未超过12小时则恢复
-   - 恢复后打印日志：`[grid] 恢复 atr_baseline=0.002345（2.1h前保存），ATR联动立即可用`
-4. `__init__` 中在 `_replay_tp_history()` 之后调用 `_restore_atr_baseline()`
-5. `_place_grid` 中更新 `_atr_baseline` 后调用 `_save_atr_baseline()`
+背景：
+- 原代码：`self._last_fgi_ts = now` 在 try 块前无条件设置，失败后下次重试等1小时
+- 问题：外网受限或API临时故障时，FGI缓存值（初始50=中性）长期不更新，
+  FGI-based的格宽调整（FGI<25收窄/FGI>70扩宽）和档位调整（FGI极端减1档）失效
 
-**效果预期：**
-- 修复前：重启后冷启动期ATR联动完全无效（_atr_baseline=0），eff_tp_mult默认1.0，
-  无论市场高低波动率都用同一格宽比，丧失ATR自适应能力
-- 修复后：重启后立即读取最近保存的基线值，ATR联动从第1次_place_grid起就生效
-- 日志可验证：搜索 `恢复 atr_baseline=` 行，确认文件年龄在合理范围内
+修复：失败时 `self._last_fgi_ts = now - 3300.0` → 5分钟后重试
+效果：网络恢复后FGI数据在5分钟内同步，极端情绪时参数调整立即生效
+
+**2. `_update_tp` 缓存 `_last_eff_tp_mult`**
+
+新增 `self._last_eff_tp_mult: float = 1.0`（__init__中初始化）
+`_update_tp()` 计算完 `_eff_tp_mult` 后写入 `self._last_eff_tp_mult`
+
+**3. `fill_tp` 事件增加ATR诊断字段**
+
+新字段：
+- `grid_spacing_bps`：成交时的格宽（bps）
+- `atr_baseline_bps`：成交时的ATR基线（bps）
+- `eff_tp_mult`：实际使用的TP乘数（含Regime×0.8 + ATR联动）
+
+效果：离线分析时可直接验证轮25-27的ATR联动是否正常工作，
+无需在文本日志中搜索debug行
 
 ---
 
 ## 历史完成
 
+### 第二十七轮（2026-04-23）
+- [x] grid_pro.py: _atr_baseline持久化（_save_atr_baseline/_restore_atr_baseline）
+
 ### 第二十六轮（2026-04-23）
 - [x] grid_pro.py: 修复_adaptive_trail_trigger/_adaptive_trail_offset的Regime边界裁剪bug
-  - RANGING trigger: [0.85,1.20], TRENDING trigger: [1.00,1.50]
-  - RANGING offset: [0.35,0.65], TRENDING offset: [0.45,0.75]
 
 ### 第二十五轮（2026-04-22）
 - [x] grid_pro.py: ATR基线动态止盈（_atr_baseline慢速EMA + atr_ratio=[0.8,1.3]缩放eff_tp_mult）
@@ -60,20 +62,18 @@
 
 ## 待解决问题（按优先级）
 
-- [ ] P3: 验证第26轮adaptive边界修复实际效果
-  - 日志搜索：`adaptive trigger: base=... bounds=[0.85,1.20]` 或 `[1.00,1.50]`
-  - 验证avg<0.4时adapted值是否在合理范围（不再被剪到0.50）
-- [ ] P3: 验证第27轮atr_baseline持久化效果
-  - 日志搜索：`恢复 atr_baseline=`，确认重启后立即恢复
+- [ ] P3: 网络恢复后验证实盘日志
+  - fill_tp事件中是否有grid_spacing_bps/atr_baseline_bps/eff_tp_mult字段
+  - FGI是否在网络恢复后5min内更新（日志搜索"恐贪指数更新"）
+  - atr_baseline重启后是否恢复（日志搜索"恢复 atr_baseline="）
 
 ---
 
 ## 下次优先行动
 
 1. **P3: 检查实盘日志（若网络恢复）**
-   - 验证 fill_tp 事件中 profit_spacings 字段是否存在（EWMA有数据）
-   - 验证 adaptive trigger bounds 是否正确（[0.85,1.20] 或 [1.00,1.50]）
-   - 验证 atr_baseline 是否在重启后恢复
+   - grep "fill_tp" analysis.jsonl | python3 -c "import json,sys; [print(json.loads(l).get('eff_tp_mult')) for l in sys.stdin if 'fill_tp' in l]"
+   - 验证 eff_tp_mult 是否在 [0.4, 2.0] 合理范围内变化
 
 2. **P3: 若发现新的真实问题，针对性修复**
    - 优先级：实盘验证反馈的bug > 理论改进
@@ -82,11 +82,11 @@
 
 ## 系统评估
 - **策略有效性**：9/10
-  - 27轮迭代；全P0/P1已解决；自适应层完整
-  - 本轮完成最后一块"冷启动盲区"修复（ATR基线持久化）
-  - 理论完备度：ATR联动TP + 分Regime EWMA + 时间衰减 + 边界修复 + 冷启动恢复
+  - 28轮迭代；全P0/P1已解决；自适应层完整
+  - 本轮补强：FGI快速重试 + ATR联动可观测性
+  - 理论完备度高：ATR联动TP + 分Regime EWMA + 时间衰减 + 边界修复 + 冷启动恢复 + 诊断字段
 - **主要风险点**：
-  1. 外部API网络受限（无法验证实盘运行状态，所有改进停留在代码层）
+  1. 外部API网络受限（无法验证实盘运行状态）
   2. 无实盘日志反馈：所有优化效果未经实盘数据验证
-  3. 网络限制解除后，需优先检查实盘是否正常运行
-- **累计运行轮次**：27
+  3. 网络限制解除后需优先检查实盘是否正常运行
+- **累计运行轮次**：28
