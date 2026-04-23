@@ -1,19 +1,19 @@
 {
-  "ran_at": "2026-04-22 09:00 UTC",
-  "eth_price": "N/A (API受限)",
+  "ran_at": "2026-04-23 10:00 UTC",
+  "eth_price": "N/A (网络受限)",
   "eth_24h_change_pct": "N/A",
-  "fear_greed_index": "N/A (API受限)",
-  "funding_rate": "N/A (API受限)",
-  "market_summary": "市场API在沙箱环境中不可达，无法获取实时数据。策略代码按计划迭代升级。",
-  "decision": "实现ATR基线动态止盈：_atr_baseline慢速EMA追踪正常格宽，_update_tp中按atr_ratio=[0.8,1.3]缩放_eff_tp_mult，波动高时TP更远，波动低时TP更近",
+  "fear_greed_index": "N/A (API不可达)",
+  "funding_rate": "N/A",
+  "market_summary": "外部API网络受限，无法获取实时行情。代码审查发现第25轮修复方向A/B引入了隐蔽的边界裁剪bug，本轮专项修复。",
+  "decision": "修复_adaptive_trail_trigger/_adaptive_trail_offset的边界裁剪bug：旧边界[0.20,0.50]/[0.08,0.35]与新base值1.00/1.20和0.50/0.60不匹配，avg<0.4时trigger被错误压到0.50（应为~1.10），完全无效化了第25轮修复；新增is_ranging参数实现Regime独立边界",
   "param_changes": [],
   "code_changes": [
     {
       "file": "quant/strategy/grid_pro.py",
-      "summary": "新增_atr_baseline状态变量（慢速EMA α=0.05）；_place_grid每次更新基线；_update_tp按当前spacing/baseline的比率缩放_eff_tp_mult，范围[0.8,1.3]，最终mult夹在[0.4,2.0]"
+      "summary": "_adaptive_trail_trigger/_adaptive_trail_offset加is_ranging参数，边界从共享[0.20,0.50]/[0.08,0.35]改为Regime独立：RANGING[0.85,1.20]/[0.35,0.65]，TRENDING[1.00,1.50]/[0.45,0.75]；同时更新_maybe_trail_tp调用处传入_is_ranging"
     }
   ],
-  "risk_notes": "ATR联动初期_atr_baseline冷启动（首次_place_grid调用时直接设为当前spacing），此前_eff_tp_mult无联动调整（安全）。α=0.05意味着基线约20次更新后才稳定。",
-  "next_focus": "P3：RANGING/TRENDING的trail trigger/offset上下界独立调参；或测试_atr_baseline冷启动行为",
-  "round_number": "25"
+  "risk_notes": "修复前：每当EWMA TP利润低于0.4格时，trigger被剪到0.50（远低于1.00设计值），TP追踪提前触发，再次产生偷盈利问题。修复后边界与base值匹配，自适应在合理范围内工作。",
+  "next_focus": "P3: _atr_baseline持久化——在grid_session.json中保存/恢复_atr_baseline，避免每次重启后冷启动期ATR联动失效",
+  "round_number": "26"
 }

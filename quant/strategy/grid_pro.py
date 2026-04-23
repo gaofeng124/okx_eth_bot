@@ -1350,8 +1350,8 @@ class GridProStrategy(TickStrategy):
         #   效果：大多数 TP 在原位自然成交 → 拿全额 60bps
         #   保留：极端延伸时（>1 格宽）仍可锁利，不丢过大盈利
         # 修复方向 B：加大 offset 到 0.50 / 0.60（真 trail 时留更多空间）
-        _trail_offset  = self._adaptive_trail_offset(0.50 if _is_ranging else 0.60)
-        _trail_trigger = self._adaptive_trail_trigger(1.00 if _is_ranging else 1.20)
+        _trail_offset  = self._adaptive_trail_offset(0.50 if _is_ranging else 0.60, _is_ranging)
+        _trail_trigger = self._adaptive_trail_trigger(1.00 if _is_ranging else 1.20, _is_ranging)
 
         if self._is_short:
             # short：市场继续下跌时向下追踪 TP，锁住更多空头利润
@@ -1478,7 +1478,7 @@ class GridProStrategy(TickStrategy):
             " 即时可用" if n_t >= 5 else " 待更多成交",
         )
 
-    def _adaptive_trail_trigger(self, base_trigger: float) -> float:
+    def _adaptive_trail_trigger(self, base_trigger: float, is_ranging: bool) -> float:
         """根据近期TP成交利润（格宽倍数，EWMA加权）动态调整追踪触发门槛。
 
         metric: profit_spacings = abs(fill_px - vwap) / spacing
@@ -1487,25 +1487,28 @@ class GridProStrategy(TickStrategy):
           中间范围 → 保持 base_trigger，不干预
 
         至少需要 5 次成交数据才启用自适应，否则直接返回 base。
-        调整幅度有界：[0.20, 0.50]，不超出合理范围。
+        边界按 Regime 独立：
+          RANGING  : [0.85, 1.20]（base 1.00，震荡市不过度放宽以免错过锁利）
+          TRENDING : [1.00, 1.50]（base 1.20，趋势市上界放宽捕获更大延伸）
         """
         avg = self._ewma_profit_avg()
         if avg is None:
             return base_trigger
+        lo, hi = (0.85, 1.20) if is_ranging else (1.00, 1.50)
         if avg < 0.4:
-            adapted = min(base_trigger + 0.10, 0.50)
+            adapted = min(base_trigger + 0.10, hi)
         elif avg > 0.8:
-            adapted = max(base_trigger - 0.05, 0.20)
+            adapted = max(base_trigger - 0.05, lo)
         else:
             adapted = base_trigger
         if adapted != base_trigger:
             log.debug(
-                "[grid] adaptive trigger: base=%.2f → %.2f (avg_profit=%.3f格, n=%d, regime=%s)",
-                base_trigger, adapted, avg, len(self._tp_current_bucket), self._current_regime.value,
+                "[grid] adaptive trigger: base=%.2f → %.2f (avg_profit=%.3f格, n=%d, regime=%s, bounds=[%.2f,%.2f])",
+                base_trigger, adapted, avg, len(self._tp_current_bucket), self._current_regime.value, lo, hi,
             )
         return adapted
 
-    def _adaptive_trail_offset(self, base_offset: float) -> float:
+    def _adaptive_trail_offset(self, base_offset: float, is_ranging: bool) -> float:
         """根据近期TP成交利润（格宽倍数，EWMA加权）动态调整追踪步长（trail_offset）。
 
         metric: profit_spacings = abs(fill_px - vwap) / spacing
@@ -1514,22 +1517,24 @@ class GridProStrategy(TickStrategy):
           中间范围 → 保持 base_offset，不干预
 
         至少需要 5 次成交数据才启用自适应，否则直接返回 base。
-        调整幅度有界：[0.08, 0.35]，防止极端飘移。
-        与 _adaptive_trail_trigger 共用 _ewma_profit_avg 信号源（EWMA双维度闭环）。
+        边界按 Regime 独立：
+          RANGING  : [0.35, 0.65]（base 0.50，下界贴近 0.35 允许震荡市快速锁利）
+          TRENDING : [0.45, 0.75]（base 0.60，趋势市保留更宽间距追更大利润）
         """
         avg = self._ewma_profit_avg()
         if avg is None:
             return base_offset
+        lo, hi = (0.35, 0.65) if is_ranging else (0.45, 0.75)
         if avg < 0.30:
-            adapted = min(base_offset + 0.03, 0.35)
+            adapted = min(base_offset + 0.03, hi)
         elif avg > 0.80:
-            adapted = max(base_offset - 0.03, 0.08)
+            adapted = max(base_offset - 0.03, lo)
         else:
             adapted = base_offset
         if adapted != base_offset:
             log.debug(
-                "[grid] adaptive offset: base=%.2f → %.2f (avg_profit=%.3f格, n=%d, regime=%s)",
-                base_offset, adapted, avg, len(self._tp_current_bucket), self._current_regime.value,
+                "[grid] adaptive offset: base=%.2f → %.2f (avg_profit=%.3f格, n=%d, regime=%s, bounds=[%.2f,%.2f])",
+                base_offset, adapted, avg, len(self._tp_current_bucket), self._current_regime.value, lo, hi,
             )
         return adapted
 
