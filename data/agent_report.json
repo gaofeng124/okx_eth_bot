@@ -1,19 +1,19 @@
 {
-  "ran_at": "2026-04-23 12:00 UTC",
-  "eth_price": "N/A（外网受限）",
-  "eth_24h_change_pct": "N/A（外网受限）",
-  "fear_greed_index": "N/A（外网受限）",
-  "funding_rate": "N/A（外网受限）",
-  "market_summary": "外部API全部不可达，无法获取实时行情。系统参数健康：GRID_DAILY_TARGET=999, BOT_MAX_SESSION=24h, GRID_DRAWDOWN_FROM_PEAK=6.0（locked），lock_path已修复。27轮改进全部到位。",
-  "decision": "第28轮：(1)_refresh_fgi失败后改为5分钟重试（原1小时），网络恢复后更快同步FGI；(2)_update_tp缓存_last_eff_tp_mult；(3)fill_tp事件新增grid_spacing_bps/atr_baseline_bps/eff_tp_mult字段，可离线验证ATR联动效果",
+  "ran_at": "2026-04-23 13:00 UTC",
+  "eth_price": "N/A (API网络受限)",
+  "eth_24h_change_pct": "N/A",
+  "fear_greed_index": "N/A (API网络受限)",
+  "funding_rate": "N/A (API网络受限)",
+  "market_summary": "外部API本次无法访问，继续代码层改进。系统已完成28轮迭代，P0/P1问题全部解决，聚焦P1级热路径bug修复。",
+  "decision": "第29轮：(1)修复_price_1h_cache失败后每tick重试5s阻塞bug（改为60s后重试）；(2)status_summary增加fgi/atr_baseline_bps/eff_tp_mult三个监控字段",
   "param_changes": [],
   "code_changes": [
     {
       "file": "quant/strategy/grid_pro.py",
-      "summary": "_refresh_fgi失败回退5min重试；_update_tp缓存_last_eff_tp_mult；fill_tp增加ATR诊断字段"
+      "summary": "修复S7价格位置因子API失败时每tick重试阻塞（on_tick热路径）：except块设ts=now-240，60s后重试；status_summary增加fgi/atr_baseline_bps/eff_tp_mult字段"
     }
   ],
-  "risk_notes": "外部API网络受限，所有改进停留在代码层面，无法验证实盘运行状态。需要网络恢复后确认实盘是否正常运行。",
-  "next_focus": "验证实盘日志：1) fill_tp事件中是否有grid_spacing_bps/eff_tp_mult字段 2) FGI是否在网络恢复后5分钟内更新 3) atr_baseline是否在重启后正确恢复",
-  "round_number": 28
+  "risk_notes": "外部API（OKX K线/alternative.me FGI）网络受限时，on_tick热路径存在5s阻塞风险。本轮修复了_price_1h_cache的致命阻塞，FGI已在第28轮修复。runner内部OKX交易API若也受限则策略无法正常运行。",
+  "next_focus": "验证实盘日志：status_summary是否输出fgi/atr_baseline_bps/eff_tp_mult；fill_tp事件是否有grid_spacing_bps/atr_baseline_bps字段；_price_1h_cache失败后是否60s重试（搜索on_tick日志中是否有重复5s间隔阻塞）",
+  "round_number": "29"
 }

@@ -2574,7 +2574,7 @@ class GridProStrategy(TickStrategy):
                     self._price_1h_cache["lo"] = min(float(c[3]) for c in _c)
                     self._price_1h_cache["ts"] = now
             except Exception:
-                pass
+                self._price_1h_cache["ts"] = now - 240.0  # 失败后60s重试（原立即重试→每tick阻塞5s）
         _hi_1h = self._price_1h_cache["hi"]
         _lo_1h = self._price_1h_cache["lo"]
         if _hi_1h > 0 and _lo_1h > 0:
@@ -2701,5 +2701,8 @@ class GridProStrategy(TickStrategy):
             "profit_protect": self._pnl.profit_protect_mode(),
             "funding_rate":  self._funding_rate,
             "book_imb_ema":  round(self._ema_book_imb.value or 0.0, 3),
+            "fgi":           self._fear_greed_index,
+            "atr_baseline_bps": round(self._atr_baseline * 10000, 2),
+            "eff_tp_mult":   round(self._last_eff_tp_mult, 3),
             "session":       self._tracker.session_summary(),
         }
