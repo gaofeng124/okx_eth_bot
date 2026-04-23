@@ -2352,6 +2352,25 @@ class GridProStrategy(TickStrategy):
                 self._emergency_close("slow_bleed_aging", mid)
                 return None
 
+            # ── 7e. 持仓硬超时（1小时强制平仓，防无限持仓）────────────────────
+            # _tp_placed_ts 在每次 TP 追踪时重置，无法用于绝对持仓时长判断。
+            # 改用 slot.fill_ts（首次成交时间戳，不随追踪重置）计算真实持仓时长。
+            # 场景：市场横盘 <0.30U 亏损且无价格破位，既有慢出血又有 TP 追踪，
+            #       两个保护均未触发 → 持仓可被无限延续。此处硬断 1 小时。
+            _held_slots_for_timeout = [
+                s for s in self._slots if s.state == _S.HOLDING and s.fill_ts > 0
+            ]
+            if _held_slots_for_timeout:
+                _oldest_fill_ts = min(s.fill_ts for s in _held_slots_for_timeout)
+                _hold_elapsed = now - _oldest_fill_ts
+                if _hold_elapsed > 3600.0:
+                    log.warning(
+                        "[grid] 持仓硬超时 %.0fmin 强制平仓（防无限持仓）mid=%.2f vwap=%.2f",
+                        _hold_elapsed / 60.0, mid, self._vwap,
+                    )
+                    self._emergency_close("hard_hold_timeout", mid)
+                    return None
+
         # ── 7c. margin_overuse → 管完持仓后不开新格 ─────────────────────────
         if _margin_overuse:
             return None
@@ -2629,9 +2648,11 @@ class GridProStrategy(TickStrategy):
         my_dir_sign_fill = -1.0 if self._is_short else +1.0
         _fill_ok_dir = not (abs(_dir_score) > 0.30 and my_dir_sign_fill * _dir_score < 0)
         # 补仓也要节流（15:18 bug 修复）
+        # 与新格激活节流保持一致的 120s 清理窗口（原 60s 会过早删除条目，
+        # 导致 60-119s 内的历史开格记录丢失，使 120s 节流失效）
         _fill_throttle_ok = True
         _now = time.time()
-        while self._recent_entries_ts and _now - self._recent_entries_ts[0] > 60:
+        while self._recent_entries_ts and _now - self._recent_entries_ts[0] > 120:
             self._recent_entries_ts.popleft()
         if len(self._recent_entries_ts) >= 2:
             _fill_throttle_ok = False

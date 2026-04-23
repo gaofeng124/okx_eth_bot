@@ -1,19 +1,19 @@
 {
-  "ran_at": "2026-04-23 13:00 UTC",
-  "eth_price": "N/A (API网络受限)",
-  "eth_24h_change_pct": "N/A",
-  "fear_greed_index": "N/A (API网络受限)",
-  "funding_rate": "N/A (API网络受限)",
-  "market_summary": "外部API本次无法访问，继续代码层改进。系统已完成28轮迭代，P0/P1问题全部解决，聚焦P1级热路径bug修复。",
-  "decision": "第29轮：(1)修复_price_1h_cache失败后每tick重试5s阻塞bug（改为60s后重试）；(2)status_summary增加fgi/atr_baseline_bps/eff_tp_mult三个监控字段",
+  "ran_at": "2026-04-23 14:00 UTC",
+  "eth_price": "N/A (外部API受限)",
+  "eth_24h_change_pct": "N/A (外部API受限)",
+  "fear_greed_index": "N/A (外部API受限)",
+  "funding_rate": "N/A (外部API受限)",
+  "market_summary": "外部API（OKX、alternative.me）本轮均无法访问（Host not in allowlist）。无法获取实时市场数据。专注代码质量改进。",
+  "decision": "第30轮：修复两个真实bug：(1)_recent_entries_ts补仓节流清理窗口60s→120s，消除与新格节流120s窗口的不一致，防止过早删除历史条目导致激活节流失效；(2)on_tick新增持仓硬超时（7e节），基于slot.fill_ts计算真实持仓时长，60min内无条件强制平仓，防止_tp_placed_ts因TP追踪重置导致慢出血计时器永不触发的无限持仓风险。",
   "param_changes": [],
   "code_changes": [
     {
       "file": "quant/strategy/grid_pro.py",
-      "summary": "修复S7价格位置因子API失败时每tick重试阻塞（on_tick热路径）：except块设ts=now-240，60s后重试；status_summary增加fgi/atr_baseline_bps/eff_tp_mult字段"
+      "summary": "Fix1: 补仓节流deque清理窗口60s→120s，与新格激活节流保持一致；Fix2: 新增7e节持仓硬超时3600s，基于slot.fill_ts（不受TP追踪重置影响），防无限持仓"
     }
   ],
-  "risk_notes": "外部API（OKX K线/alternative.me FGI）网络受限时，on_tick热路径存在5s阻塞风险。本轮修复了_price_1h_cache的致命阻塞，FGI已在第28轮修复。runner内部OKX交易API若也受限则策略无法正常运行。",
-  "next_focus": "验证实盘日志：status_summary是否输出fgi/atr_baseline_bps/eff_tp_mult；fill_tp事件是否有grid_spacing_bps/atr_baseline_bps字段；_price_1h_cache失败后是否60s重试（搜索on_tick日志中是否有重复5s间隔阻塞）",
-  "round_number": "29"
+  "risk_notes": "持仓硬超时60min强制市价平（taker费用7bps），若市场临近TP位可能损失浮动盈利；但比无限持仓风险小。外部API受限是本轮主要限制，无法验证实盘状态。",
+  "next_focus": "验证两项修复效果：日志搜索hard_hold_timeout事件（若出现说明历史上有持仓超1h的问题）；搜索_recent_entries_ts相关日志观察节流是否更稳定；同时关注网络恢复后的实盘运行状态。",
+  "round_number": "30"
 }
