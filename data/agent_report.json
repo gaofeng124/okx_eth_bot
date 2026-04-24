@@ -1,19 +1,19 @@
 {
-  "ran_at": "2026-04-23 14:00 UTC",
-  "eth_price": "N/A (外部API受限)",
-  "eth_24h_change_pct": "N/A (外部API受限)",
-  "fear_greed_index": "N/A (外部API受限)",
-  "funding_rate": "N/A (外部API受限)",
-  "market_summary": "外部API（OKX、alternative.me）本轮均无法访问（Host not in allowlist）。无法获取实时市场数据。专注代码质量改进。",
-  "decision": "第30轮：修复两个真实bug：(1)_recent_entries_ts补仓节流清理窗口60s→120s，消除与新格节流120s窗口的不一致，防止过早删除历史条目导致激活节流失效；(2)on_tick新增持仓硬超时（7e节），基于slot.fill_ts计算真实持仓时长，60min内无条件强制平仓，防止_tp_placed_ts因TP追踪重置导致慢出血计时器永不触发的无限持仓风险。",
+  "ran_at": "2026-04-24 00:00 UTC",
+  "eth_price": "N/A (API不可达)",
+  "eth_24h_change_pct": "N/A",
+  "fear_greed_index": "N/A (API不可达)",
+  "funding_rate": "N/A (API不可达)",
+  "market_summary": "外部API全部不可达，无实时市场数据。基于历史30轮迭代进行代码层面精细修复。系统已完成所有P0/P1修复，进入P2/P3精细优化阶段。",
+  "decision": "第31轮：修复两个真实bug——(1)7e硬超时盈利持仓错误强平：盈利>$0.10且有TP挂单时将超时从60min延至120min，避免taker平仓损耗；(2)SHORT方向TP追踪节流时间戳更新位置不一致：移至外层与LONG路径对齐，防止潜在spin-loop。",
   "param_changes": [],
   "code_changes": [
     {
       "file": "quant/strategy/grid_pro.py",
-      "summary": "Fix1: 补仓节流deque清理窗口60s→120s，与新格激活节流保持一致；Fix2: 新增7e节持仓硬超时3600s，基于slot.fill_ts（不受TP追踪重置影响），防无限持仓"
+      "summary": "7e持仓硬超时增加盈利保护：unrealized>0.10且TP挂单时timeout从3600s延至7200s，避免强平taker损耗；SHORT TP追踪_last_tp_trail_ts更新移出内层if块，与LONG路径对齐防止spin-loop"
     }
   ],
-  "risk_notes": "持仓硬超时60min强制市价平（taker费用7bps），若市场临近TP位可能损失浮动盈利；但比无限持仓风险小。外部API受限是本轮主要限制，无法验证实盘状态。",
-  "next_focus": "验证两项修复效果：日志搜索hard_hold_timeout事件（若出现说明历史上有持仓超1h的问题）；搜索_recent_entries_ts相关日志观察节流是否更稳定；同时关注网络恢复后的实盘运行状态。",
-  "round_number": "30"
+  "risk_notes": "外部API网络持续不可达，无法实时监控市场状态。所有优化仍未经实盘数据验证。7e延长到2h的风险：极端行情中盈利持仓可能从盈利转为亏损，但7b（价格破位止损）和7d（慢出血30min/$0.30）作为前置保护兜底。",
+  "next_focus": "P3：验证7e修复效果——grep 'hard_hold_timeout' logs观察触发频率变化；若有分析日志查看avg_win改善情况；考虑统计analysis.jsonl中fill_tp的profit_spacings分布验证EWMA自适应准确性",
+  "round_number": "31"
 }

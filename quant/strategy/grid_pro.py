@@ -1376,7 +1376,7 @@ class GridProStrategy(TickStrategy):
                     if oid:
                         self._tp_order_id = oid
                         self._tp_placed_ts = now
-                    self._last_tp_trail_ts = now
+                self._last_tp_trail_ts = now  # 无论成功与否都更新节流时间戳（与long一致）
         else:
             # long：市场继续上涨时向上追踪 TP
             if mid > self._tp_price + spacing_abs * _trail_trigger:
@@ -2352,24 +2352,37 @@ class GridProStrategy(TickStrategy):
                 self._emergency_close("slow_bleed_aging", mid)
                 return None
 
-            # ── 7e. 持仓硬超时（1小时强制平仓，防无限持仓）────────────────────
+            # ── 7e. 持仓硬超时（防无限持仓）────────────────────────────────────
             # _tp_placed_ts 在每次 TP 追踪时重置，无法用于绝对持仓时长判断。
             # 改用 slot.fill_ts（首次成交时间戳，不随追踪重置）计算真实持仓时长。
-            # 场景：市场横盘 <0.30U 亏损且无价格破位，既有慢出血又有 TP 追踪，
-            #       两个保护均未触发 → 持仓可被无限延续。此处硬断 1 小时。
+            # 盈利时宽限到 2h：避免强平吃 taker 费 + 放弃即将成交的 maker TP。
+            # unrealized > 0.10 且 TP 挂单中 → 给 TP 更多时间自然 fill；
+            # 其余情况（亏损/无TP）保持 1h 断路，防慢出血被躲过。
             _held_slots_for_timeout = [
                 s for s in self._slots if s.state == _S.HOLDING and s.fill_ts > 0
             ]
             if _held_slots_for_timeout:
                 _oldest_fill_ts = min(s.fill_ts for s in _held_slots_for_timeout)
                 _hold_elapsed = now - _oldest_fill_ts
-                if _hold_elapsed > 3600.0:
+                _timeout_sec = (
+                    7200.0
+                    if (unrealized > 0.10 and self._tp_order_id)
+                    else 3600.0
+                )
+                if _hold_elapsed > _timeout_sec:
                     log.warning(
-                        "[grid] 持仓硬超时 %.0fmin 强制平仓（防无限持仓）mid=%.2f vwap=%.2f",
+                        "[grid] 持仓硬超时 %.0fmin 强制平仓（防无限持仓）"
+                        "mid=%.2f vwap=%.2f upnl=%.3f timeout=%.0fmin",
                         _hold_elapsed / 60.0, mid, self._vwap,
+                        unrealized, _timeout_sec / 60.0,
                     )
                     self._emergency_close("hard_hold_timeout", mid)
                     return None
+                elif _hold_elapsed > 3600.0:
+                    log.info(
+                        "[grid] 持仓已%.0fmin 盈利%.3fU TP挂单中，宽限到%.0fmin（避免taker平仓损耗）",
+                        _hold_elapsed / 60.0, unrealized, _timeout_sec / 60.0,
+                    )
 
         # ── 7c. margin_overuse → 管完持仓后不开新格 ─────────────────────────
         if _margin_overuse:
