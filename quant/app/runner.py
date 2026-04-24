@@ -1558,6 +1558,7 @@ async def _lev5_microstructure_loop(runtime: dict[str, Any]) -> None:
 
 async def _ws_price_feed_loop(runtime: dict[str, Any]) -> None:
     """后台 WebSocket 实时行情写入 runtime，供 _eval_exit 使用最新价格。"""
+    _ws_backoff = 1.0
     while True:
         try:
             async for row in stream_tickers(OKX_WS_PUBLIC_URL_LIST, INST_ID):
@@ -1568,9 +1569,11 @@ async def _ws_price_feed_loop(runtime: dict[str, Any]) -> None:
                     runtime["ws_bid"] = _bid
                     runtime["ws_ask"] = _ask
                     runtime["ws_ts"] = time.time()
+                    _ws_backoff = 1.0  # 成功收到数据时重置退避计时器
         except Exception as e:
-            log.warning("[WS行情] 连接断开: %s | 5s 后重连", e)
-            await asyncio.sleep(5.0)
+            log.warning("[WS行情] 连接断开: %s | %.0fs 后重连", e, _ws_backoff)
+            await asyncio.sleep(_ws_backoff)
+            _ws_backoff = min(_ws_backoff * 2.0, 30.0)
 
 
 async def _ws_stall_watchdog_loop(

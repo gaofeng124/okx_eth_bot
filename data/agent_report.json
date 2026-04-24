@@ -1,19 +1,23 @@
 {
-  "ran_at": "2026-04-24 01:00 UTC",
-  "eth_price": "N/A（沙箱网络受限，OKX API不可达）",
+  "ran_at": "2026-04-24 02:00 UTC",
+  "eth_price": "N/A (沙箱网络受限)",
   "eth_24h_change_pct": "N/A",
-  "fear_greed_index": "N/A（external API unreachable）",
+  "fear_greed_index": "N/A (获取失败)",
   "funding_rate": "N/A",
-  "market_summary": "外部API均不可达（沙箱限制）。无实时市场数据，基于代码审查进行纯改进轮次。系统处于待机状态，两项代码质量问题已修复。",
-  "decision": "第32轮：修复两项代码bug——(1)LONG路径_last_tp_trail_ts=now仍在if new_tp>tp_price:内部（第1396行/20空格），与SHORT路径（第1379行/16空格）真正不对称，移至触发条件外层与SHORT完全对齐；(2)7e宽限期info日志每tick触发，在60-120min宽限期内可产生720-3600条日志，加入每5分钟一次的节流检查。",
+  "market_summary": "沙箱环境网络受限，无法获取实时市场数据。系统持续迭代第33轮，代码成熟度高。本轮聚焦P1 WS重连健壮性和P3 EWMA自适应稳健性。",
+  "decision": "第33轮：(1)_ws_price_feed_loop固定5s重连→指数退避(1s→2s→4s...→30s，成功收数重置)；(2)profit_spacings存入EWMA桶前加min(x,3.0)上限帽，同步修复replay_tp_history读取路径。",
   "param_changes": [],
   "code_changes": [
     {
+      "file": "quant/app/runner.py",
+      "summary": "_ws_price_feed_loop: 固定5s重连改为指数退避(1→30s)，成功收到数据时重置_ws_backoff=1.0"
+    },
+    {
       "file": "quant/strategy/grid_pro.py",
-      "summary": "Fix-A: LONG路径_last_tp_trail_ts=now从if new_tp>tp_price:内(20格)移至触发条件外(16格)，与SHORT路径真正对齐，消除spin-loop风险；Fix-B: 7e宽限期日志加5分钟节流(int(_hold_elapsed)%300<5)，避免每tick刷日志"
+      "summary": "TP fill时profit_spacings加min(ps,3.0)上限帽，_replay_tp_history读取历史时同步加帽，防止极端趋势成交歪曲EWMA自适应"
     }
   ],
-  "risk_notes": "外部网络受限导致市场数据不可得；7e宽限期日志节流采用秒级整数取模，ticks若间隔>5s可能偶尔跳过当轮输出，但每5分钟区间内至少有后续tick补充，监控覆盖无影响。",
-  "next_focus": "P3验证：日志中grep 'TP追踪上调'后确认_last_tp_trail_ts对齐效果（LONG触发无改善时不再spin-loop）；验证7e宽限期每5min出日志而非每tick。",
-  "round_number": 32
+  "risk_notes": "外部API网络受限(沙箱)；所有优化未经实盘数据验证。EWMA上限帽3.0设定偏保守，若市场出现>3格宽的延伸趋势，adaptive系统将感知到'高利润'信号但不超过3.0，仍会触发trigger收紧-0.05。",
+  "next_focus": "P3: 验证WS指数退避在实际断网场景中的表现(grep '[WS行情]' logs中backoff递增日志)；分析profit_spacings分布是否集中在0.4-0.8合理区间",
+  "round_number": "33"
 }

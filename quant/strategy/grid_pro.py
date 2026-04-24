@@ -1463,7 +1463,7 @@ class GridProStrategy(TickStrategy):
                         except Exception:
                             continue
                         regime_str = rec.get("regime", "RANGING")
-                        records.append((float(ts), float(ps), str(regime_str)))
+                        records.append((float(ts), min(float(ps), 3.0), str(regime_str)))
             except Exception:
                 pass
 
@@ -1769,7 +1769,7 @@ class GridProStrategy(TickStrategy):
             _ps: float | None = None
             if self._grid_spacing > 0 and self._vwap > 0:
                 spacing_abs = self._grid_spacing * self._vwap
-                _ps = abs(fill_px - self._vwap) / spacing_abs
+                _ps = min(abs(fill_px - self._vwap) / spacing_abs, 3.0)
                 self._tp_current_bucket.append((time.time(), _ps))
             log.info(
                 "[grid] TP 成交 @%.2f sz=%.1f net=%.4f USDT | 日累计=%.4f USDT",
