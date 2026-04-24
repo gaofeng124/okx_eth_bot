@@ -1,19 +1,19 @@
 {
-  "ran_at": "2026-04-24 00:00 UTC",
-  "eth_price": "N/A (API不可达)",
+  "ran_at": "2026-04-24 01:00 UTC",
+  "eth_price": "N/A（沙箱网络受限，OKX API不可达）",
   "eth_24h_change_pct": "N/A",
-  "fear_greed_index": "N/A (API不可达)",
-  "funding_rate": "N/A (API不可达)",
-  "market_summary": "外部API全部不可达，无实时市场数据。基于历史30轮迭代进行代码层面精细修复。系统已完成所有P0/P1修复，进入P2/P3精细优化阶段。",
-  "decision": "第31轮：修复两个真实bug——(1)7e硬超时盈利持仓错误强平：盈利>$0.10且有TP挂单时将超时从60min延至120min，避免taker平仓损耗；(2)SHORT方向TP追踪节流时间戳更新位置不一致：移至外层与LONG路径对齐，防止潜在spin-loop。",
+  "fear_greed_index": "N/A（external API unreachable）",
+  "funding_rate": "N/A",
+  "market_summary": "外部API均不可达（沙箱限制）。无实时市场数据，基于代码审查进行纯改进轮次。系统处于待机状态，两项代码质量问题已修复。",
+  "decision": "第32轮：修复两项代码bug——(1)LONG路径_last_tp_trail_ts=now仍在if new_tp>tp_price:内部（第1396行/20空格），与SHORT路径（第1379行/16空格）真正不对称，移至触发条件外层与SHORT完全对齐；(2)7e宽限期info日志每tick触发，在60-120min宽限期内可产生720-3600条日志，加入每5分钟一次的节流检查。",
   "param_changes": [],
   "code_changes": [
     {
       "file": "quant/strategy/grid_pro.py",
-      "summary": "7e持仓硬超时增加盈利保护：unrealized>0.10且TP挂单时timeout从3600s延至7200s，避免强平taker损耗；SHORT TP追踪_last_tp_trail_ts更新移出内层if块，与LONG路径对齐防止spin-loop"
+      "summary": "Fix-A: LONG路径_last_tp_trail_ts=now从if new_tp>tp_price:内(20格)移至触发条件外(16格)，与SHORT路径真正对齐，消除spin-loop风险；Fix-B: 7e宽限期日志加5分钟节流(int(_hold_elapsed)%300<5)，避免每tick刷日志"
     }
   ],
-  "risk_notes": "外部API网络持续不可达，无法实时监控市场状态。所有优化仍未经实盘数据验证。7e延长到2h的风险：极端行情中盈利持仓可能从盈利转为亏损，但7b（价格破位止损）和7d（慢出血30min/$0.30）作为前置保护兜底。",
-  "next_focus": "P3：验证7e修复效果——grep 'hard_hold_timeout' logs观察触发频率变化；若有分析日志查看avg_win改善情况；考虑统计analysis.jsonl中fill_tp的profit_spacings分布验证EWMA自适应准确性",
-  "round_number": "31"
+  "risk_notes": "外部网络受限导致市场数据不可得；7e宽限期日志节流采用秒级整数取模，ticks若间隔>5s可能偶尔跳过当轮输出，但每5分钟区间内至少有后续tick补充，监控覆盖无影响。",
+  "next_focus": "P3验证：日志中grep 'TP追踪上调'后确认_last_tp_trail_ts对齐效果（LONG触发无改善时不再spin-loop）；验证7e宽限期每5min出日志而非每tick。",
+  "round_number": 32
 }

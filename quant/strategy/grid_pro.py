@@ -1393,7 +1393,7 @@ class GridProStrategy(TickStrategy):
                     if oid:
                         self._tp_order_id = oid
                         self._tp_placed_ts = now   # 重置超时计时器：市场上行时不应过早触发止损
-                    self._last_tp_trail_ts = now   # 无论成功与否都更新节流时间戳
+                self._last_tp_trail_ts = now   # 触发条件成立即更新节流（与short路径对齐）
 
     def _ewma_profit_avg(self) -> float | None:
         """时间衰减加权 EWMA：近期 TP 利润格宽倍数，半衰期 30min。
@@ -2379,10 +2379,11 @@ class GridProStrategy(TickStrategy):
                     self._emergency_close("hard_hold_timeout", mid)
                     return None
                 elif _hold_elapsed > 3600.0:
-                    log.info(
-                        "[grid] 持仓已%.0fmin 盈利%.3fU TP挂单中，宽限到%.0fmin（避免taker平仓损耗）",
-                        _hold_elapsed / 60.0, unrealized, _timeout_sec / 60.0,
-                    )
+                    if int(_hold_elapsed) % 300 < 5:  # 每5分钟输出一次，避免每tick刷日志
+                        log.info(
+                            "[grid] 持仓已%.0fmin 盈利%.3fU TP挂单中，宽限到%.0fmin（避免taker平仓损耗）",
+                            _hold_elapsed / 60.0, unrealized, _timeout_sec / 60.0,
+                        )
 
         # ── 7c. margin_overuse → 管完持仓后不开新格 ─────────────────────────
         if _margin_overuse:
