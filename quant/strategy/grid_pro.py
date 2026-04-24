@@ -2636,6 +2636,16 @@ class GridProStrategy(TickStrategy):
                     )
                 return None
 
+        # ── 10e-2. 1h快速下跌硬止进（P2, round34）
+        # S7权重0.30仅在距1h高点<20bps时生效；价格已回落>100bps时S7为0（中性），
+        # 此门槛补充中期下行行情盲区（regime TRENDING_DOWN需-0.30%偏离才触发）
+        if not self._is_short and not self._grid_active and _hi_1h > 0 and mid < _hi_1h * 0.99:
+            log.info(
+                "[grid][1h-drop-gate] 1h高=%.2f 当前=%.2f ↓%.2f%%，暂停新LONG格（防1h下行接刀）",
+                _hi_1h, mid, (_hi_1h - mid) / _hi_1h * 100,
+            )
+            return None
+
         # ── 10f. 开仓节流 gate（2026-04-22 改进 2）
         # 问题：13:18:19-13:18:29 10 秒内连续 3 次 buy，堆仓到 0.9 张（触发 sell 勉强盈利）
         # 规则：2 分钟内开仓次数 > 2 → 拒绝第 3 次

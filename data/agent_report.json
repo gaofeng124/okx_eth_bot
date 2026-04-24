@@ -1,23 +1,19 @@
 {
-  "ran_at": "2026-04-24 02:00 UTC",
-  "eth_price": "N/A (沙箱网络受限)",
+  "ran_at": "2026-04-24 03:00 UTC",
+  "eth_price": "N/A（沙盒网络受限）",
   "eth_24h_change_pct": "N/A",
-  "fear_greed_index": "N/A (获取失败)",
-  "funding_rate": "N/A",
-  "market_summary": "沙箱环境网络受限，无法获取实时市场数据。系统持续迭代第33轮，代码成熟度高。本轮聚焦P1 WS重连健壮性和P3 EWMA自适应稳健性。",
-  "decision": "第33轮：(1)_ws_price_feed_loop固定5s重连→指数退避(1s→2s→4s...→30s，成功收数重置)；(2)profit_spacings存入EWMA桶前加min(x,3.0)上限帽，同步修复replay_tp_history读取路径。",
+  "fear_greed_index": "N/A（API受限）",
+  "funding_rate": "N/A（API受限）",
+  "market_summary": "外部API全部不可达（沙盒环境网络限制）。无法获取实时ETH价格、资金费率及恐贪指数。参数检查正常：GRID_DAILY_TARGET=999、GRID_DRAWDOWN(locked)=6.0、WS退避已在round33实现。",
+  "decision": "第34轮：新增1h价格下跌硬止进门槛——从1h高点回落>1%时暂停新LONG格（补S7软信号盲区）",
   "param_changes": [],
   "code_changes": [
     {
-      "file": "quant/app/runner.py",
-      "summary": "_ws_price_feed_loop: 固定5s重连改为指数退避(1→30s)，成功收到数据时重置_ws_backoff=1.0"
-    },
-    {
       "file": "quant/strategy/grid_pro.py",
-      "summary": "TP fill时profit_spacings加min(ps,3.0)上限帽，_replay_tp_history读取历史时同步加帽，防止极端趋势成交歪曲EWMA自适应"
+      "summary": "在_update_entry中插入1h下跌硬gate：not is_short且not grid_active且_hi_1h>0且mid<_hi_1h*0.99时返回None，防止在1h中期下行行情中持续开LONG格接刀"
     }
   ],
-  "risk_notes": "外部API网络受限(沙箱)；所有优化未经实盘数据验证。EWMA上限帽3.0设定偏保守，若市场出现>3格宽的延伸趋势，adaptive系统将感知到'高利润'信号但不超过3.0，仍会触发trigger收紧-0.05。",
-  "next_focus": "P3: 验证WS指数退避在实际断网场景中的表现(grep '[WS行情]' logs中backoff递增日志)；分析profit_spacings分布是否集中在0.4-0.8合理区间",
-  "round_number": "33"
+  "risk_notes": "沙盒环境无法监控实时仓位和PnL；1h下跌gate的0.99阈值（1%）在ETH剧烈波动期间可能过于保守，但优于无保护",
+  "next_focus": "P3: 若能访问实盘日志，验证1h-drop-gate触发频率；分析analysis.jsonl中profit_spacings分布是否健康（目标0.5-1.5U/笔）",
+  "round_number": "34"
 }
