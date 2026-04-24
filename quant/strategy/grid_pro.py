@@ -2646,6 +2646,17 @@ class GridProStrategy(TickStrategy):
             )
             return None
 
+        # ── 10e-3. 1h快速上涨硬止进SHORT方向（P3, round35）
+        # 与LONG的1h-drop-gate对称：SHORT策略在价格已从1h低点上涨>1%时，
+        # 同样存在S7盲区（S7仅在距1h低点<20bps时生效），
+        # 此门槛防止中期上行行情中持续空头接刀
+        if self._is_short and not self._grid_active and _lo_1h > 0 and mid > _lo_1h * 1.01:
+            log.info(
+                "[grid][1h-rise-gate] 1h低=%.2f 当前=%.2f ↑%.2f%%，暂停新SHORT格（防1h上行接刀）",
+                _lo_1h, mid, (mid - _lo_1h) / _lo_1h * 100,
+            )
+            return None
+
         # ── 10f. 开仓节流 gate（2026-04-22 改进 2）
         # 问题：13:18:19-13:18:29 10 秒内连续 3 次 buy，堆仓到 0.9 张（触发 sell 勉强盈利）
         # 规则：2 分钟内开仓次数 > 2 → 拒绝第 3 次

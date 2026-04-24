@@ -1,19 +1,19 @@
 {
-  "ran_at": "2026-04-24 03:00 UTC",
-  "eth_price": "N/A（沙盒网络受限）",
+  "ran_at": "2026-04-24 04:00 UTC",
+  "eth_price": "N/A（沙盒环境API不可达）",
   "eth_24h_change_pct": "N/A",
-  "fear_greed_index": "N/A（API受限）",
-  "funding_rate": "N/A（API受限）",
-  "market_summary": "外部API全部不可达（沙盒环境网络限制）。无法获取实时ETH价格、资金费率及恐贪指数。参数检查正常：GRID_DAILY_TARGET=999、GRID_DRAWDOWN(locked)=6.0、WS退避已在round33实现。",
-  "decision": "第34轮：新增1h价格下跌硬止进门槛——从1h高点回落>1%时暂停新LONG格（补S7软信号盲区）",
+  "fear_greed_index": "N/A（沙盒环境API不可达）",
+  "funding_rate": "N/A",
+  "market_summary": "沙盒环境无法访问外部API，市场数据不可获取。基于策略逻辑对称性进行代码改进。",
+  "decision": "第35轮：新增SHORT方向1h快速上涨硬止进gate——从1h低点上涨>1%时暂停新SHORT格（与LONG的1h-drop-gate完全对称）",
   "param_changes": [],
   "code_changes": [
     {
       "file": "quant/strategy/grid_pro.py",
-      "summary": "在_update_entry中插入1h下跌硬gate：not is_short且not grid_active且_hi_1h>0且mid<_hi_1h*0.99时返回None，防止在1h中期下行行情中持续开LONG格接刀"
+      "summary": "在10e-2 LONG drop-gate之后插入10e-3 SHORT rise-gate：price > lo_1h*1.01时阻止新SHORT格开仓，填补SHORT方向S7软信号盲区"
     }
   ],
-  "risk_notes": "沙盒环境无法监控实时仓位和PnL；1h下跌gate的0.99阈值（1%）在ETH剧烈波动期间可能过于保守，但优于无保护",
-  "next_focus": "P3: 若能访问实盘日志，验证1h-drop-gate触发频率；分析analysis.jsonl中profit_spacings分布是否健康（目标0.5-1.5U/笔）",
-  "round_number": "34"
+  "risk_notes": "外部API在沙盒环境不可达，所有市场数据均无法实时验证；实盘1h-drop/rise-gate触发率仍未知",
+  "next_focus": "验证1h-drop-gate和1h-rise-gate的触发率（grep '[1h-drop-gate]\\|[1h-rise-gate]' logs/*.log | wc -l），期望每天5-20次；若超过50次则阈值0.99/1.01过严",
+  "round_number": 35
 }
