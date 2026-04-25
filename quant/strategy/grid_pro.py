@@ -1308,7 +1308,7 @@ class GridProStrategy(TickStrategy):
         _eff_tp_mult = self._tp_mult * (0.8 if self._current_regime == Regime.RANGING else 1.0)
         # ATR 联动：当前格宽高于基线→延伸 TP（波动大，价格走得远）；低于基线→收紧 TP（波动小，贴近成交）
         if self._atr_baseline > 0.0 and self._grid_spacing > 0.0:
-            _atr_ratio = max(0.8, min(1.3, self._grid_spacing / self._atr_baseline))
+            _atr_ratio = max(0.85, min(1.3, self._grid_spacing / self._atr_baseline))
             _eff_tp_mult = max(0.4, min(2.0, _eff_tp_mult * _atr_ratio))
             log.debug(
                 "[grid] ATR联动 TP: spacing=%.5f baseline=%.5f ratio=%.3f eff_mult=%.3f",
