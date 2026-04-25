@@ -1,33 +1,34 @@
 # ETH量化系统升级计划
 
-## 本次（2026-04-24 第三十五轮）完成
+## 本次（2026-04-25 第三十六轮）完成
 
-### grid_pro.py：SHORT方向1h上涨硬止进gate（P3）
+### grid_pro.py：1h方向gate滞回环（hysteresis）+ 日志节流（P3）
 
-**问题**：第34轮为LONG方向添加了1h-drop-gate（价格从1h高点下跌>1%时暂停新LONG格），
-但SHORT方向缺少对称保护。当价格从1h低点快速上涨>1%时，SHORT策略同样存在：
-- S7（价格位置因子，权重0.30）仅在距1h低点<20bps时生效，价格已上涨>100bps时S7=0（中性）
-- regime TRENDING_UP需要macro_bias>=+0.30%（5min EMA偏离）才触发，对1h中期上行有盲区窗口
+**问题**：第34/35轮新增的 LONG 1h-drop-gate 和 SHORT 1h-rise-gate 使用单一阈值（0.99/1.01），存在两个缺陷：
+1. **边界震荡**：价格在0.99附近反复穿越时，gate 在"激活→释放→激活"之间不断翻转，导致开格决策不稳定（可能在数秒内交替放行/拒绝）
+2. **日志刷屏**：gate 活跃时每 tick（0.5s）输出一条 info 日志，每分钟 120 条，大量占用磁盘和掩盖重要日志
 
-**修复**：在10e-2 LONG gate之后插入10e-3 SHORT gate：
-```python
-if self._is_short and not self._grid_active and _lo_1h > 0 and mid > _lo_1h * 1.01:
-    log.info("[grid][1h-rise-gate] ...")
-    return None
-```
-- 仅影响新格激活（`not self._grid_active`），不影响已有仓位的TP/止损
-- 仅影响SHORT策略（`self._is_short`）
-- `_lo_1h`在此位置已赋值（line 2612），安全访问
-- API未缓存时`_lo_1h=0`，条件自动跳过，无副作用
+**修复**（round36）：
+- 新增 3 个状态变量：`_long_drop_gate`, `_short_rise_gate`, `_last_gate_log_ts`
+- 双阈值滞回环（Schmitt Trigger 原理）：
+  - LONG gate：entry=0.990（跌>1%触发）, exit=0.995（涨回0.5%释放）
+  - SHORT gate：entry=1.010（涨>1%触发）, exit=1.005（回落0.5%释放）
+- 日志节流：gate 活跃期间每 60s 输出一次，不再每 tick 刷屏
 
-**效果**：价格在1h内上涨>1%时，新SHORT格开仓被硬性阻止，LONG/SHORT双向保护现在完全对称。
+**效果预期**：
+- 消除价格在±1% 附近震荡时 gate 的"乒乓"（chattering），开格更稳定
+- 日志减少 >99%（120 条/min → 最多 1 条/min）
+- gate 的保护有效性不变：核心逻辑（1%偏离阈值）未改变
 
 ---
 
 ## 历史完成
 
+### 第三十五轮（2026-04-24）
+- [x] grid_pro.py: SHORT方向1h快速上涨硬止进gate（entry=1.01），与LONG的drop-gate对称
+
 ### 第三十四轮（2026-04-24）
-- [x] grid_pro.py: 新增1h价格下跌硬止进门槛——从1h高点回落>1%时暂停新LONG格
+- [x] grid_pro.py: 新增LONG方向1h价格下跌硬止进门槛（entry=0.99）
 
 ### 第三十三轮（2026-04-24）
 - [x] runner.py: WS重连固定5s→指数退避(1s→2s→4s...→30s)
@@ -48,34 +49,39 @@ if self._is_short and not self._grid_active and _lo_1h > 0 and mid > _lo_1h * 1.
 
 ## 待解决问题（按优先级）
 
-- [ ] P3: 验证1h-drop-gate + 1h-rise-gate触发频率
+- [ ] P3: 验证gate实际触发频率（需实盘日志）
   - 方法：`grep '1h-drop-gate\|1h-rise-gate' data/logs/*.log | wc -l`
-  - 预期：每天5-20次（太少=无效；太多=阈值0.99/1.01过严导致机会损失）
-  - 若每天>50次：考虑放宽到0.985/1.015
+  - 预期：滞回环后，每天有效触发次数应 < 单阈值版本（因 exit 宽松减少了重复触发）
+  - 若每天>30次有效触发：考虑放宽 entry 到 0.985/1.015
+
+- [ ] P3: 验证profit_spacings EWMA分布
+  - 方法：从analysis.jsonl提取fill_tp的profit_spacings，期望0.4-1.5格均值
+  - 若<0.4持续：trail_trigger基础值 1.00→1.10（RANGING）
 
 - [ ] P3: 验证WS指数退避效果（round33）
   - 方法：`grep '\[WS行情\]' logs/*.log | grep '后重连'`
-
-- [ ] P3: 分析实盘profit_spacings分布
-  - 方法：从analysis.jsonl提取fill_tp的profit_spacings，期望0.5-1.5格均值
+  - 预期：断线间隔逐步变长，1s→2s→4s...，无频繁秒级重连
 
 ## 下次优先行动
 
 1. **若能访问实盘日志**：
-   - 验证1h-drop/rise-gate触发率（期望5-20次/天）
-   - 查看profit_spacings分布确认EWMA收敛
+   - 查看gate日志确认滞回环效果（每分钟最多1条，非每tick）
+   - 统计drop-gate和rise-gate的触发→释放周期长度（期望5-30min）
 
-2. **P3候选**：若两个gate触发率均过高（>50次/天），统一放宽阈值到0.985/1.015
+2. **P3候选**：若profit_spacings EWMA持续<0.4格：
+   - 调整 `_adaptive_trail_trigger` 的 RANGING base_trigger: 1.00 → 1.10
+   - 意味着价格超出TP 1.1格才开始追踪（比原来1格更宽容）
 
-3. **P3候选**：若profit_spacings长期<0.4格，考虑放宽trail_trigger基础值（1.20→1.30）
+3. **P3候选**：监控 `_bearish_regime_since` 宽限期频率
+   - 若VOLATILE状态频繁持续60s+导致频繁强平：考虑宽限期从60s→90s
 
 ## 系统评估
 - **策略有效性**：9/10
-  - 35轮迭代；全P0/P1已解决；P2/P3改进积累中
-  - LONG/SHORT方向的1h快速趋势保护现在完全对称
+  - 36轮迭代；全P0/P1已解决；P2/P3改进积累中
+  - 1h方向gate现在具备滞回环保护，边界稳定性提升
   - 主要待验证：实盘gate触发率、profit_spacings EWMA收敛
 - **当前主要风险**：
   1. 外部API网络受限（沙盒环境，无实时市场监控）
   2. 实盘日志无法访问（所有优化均未经实盘数据验证）
-  3. 两个1h gate阈值1%在高波动市场可能需要动态调整
-- **累计运行轮次**：35
+  3. gate滞回环的5bps宽松区在极端行情可能导致一次额外的逆势开格
+- **累计运行轮次**：36

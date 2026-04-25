@@ -484,6 +484,10 @@ class GridProStrategy(TickStrategy):
         # 【2026-04-22 改进 1-3】交易节流 + 价格位置 + 波动自适应
         self._recent_entries_ts: deque[float] = deque(maxlen=10)  # 最近开仓时间
         self._price_1h_cache = {"ts": 0.0, "hi": 0.0, "lo": 0.0}  # 1h 高低缓存
+        # 1h方向gate滞回环状态（round36：防单阈值震荡，入0.99/出0.995）
+        self._long_drop_gate: bool  = False  # LONG: 价格跌离1h高点>1%时激活
+        self._short_rise_gate: bool = False  # SHORT: 价格涨离1h低点>1%时激活
+        self._last_gate_log_ts: float = 0.0  # gate日志节流（60s一次，防每tick刷屏）
         # 【2026-04-22 17:30 盈亏比修复 改动 5】连亏冷静期
         # 主人："加注赔钱金额大" → 连 2 亏不加仓，30min 冷静
         self._loss_streak_until: float = 0.0  # 冷静期结束时间
@@ -2636,26 +2640,40 @@ class GridProStrategy(TickStrategy):
                     )
                 return None
 
-        # ── 10e-2. 1h快速下跌硬止进（P2, round34）
+        # ── 10e-2. 1h快速下跌硬止进（P2, round34；滞回环+日志节流 round36）
         # S7权重0.30仅在距1h高点<20bps时生效；价格已回落>100bps时S7为0（中性），
         # 此门槛补充中期下行行情盲区（regime TRENDING_DOWN需-0.30%偏离才触发）
-        if not self._is_short and not self._grid_active and _hi_1h > 0 and mid < _hi_1h * 0.99:
-            log.info(
-                "[grid][1h-drop-gate] 1h高=%.2f 当前=%.2f ↓%.2f%%，暂停新LONG格（防1h下行接刀）",
-                _hi_1h, mid, (_hi_1h - mid) / _hi_1h * 100,
-            )
-            return None
+        # 滞回环：entry=0.990（跌1%触发），exit=0.995（涨回0.5%释放）
+        # 目的：防止价格在阈值附近震荡时gate反复开关导致错误拒绝/放行
+        if not self._is_short and _hi_1h > 0:
+            if mid < _hi_1h * 0.990:
+                self._long_drop_gate = True
+            elif mid >= _hi_1h * 0.995:
+                self._long_drop_gate = False
+            if self._long_drop_gate and not self._grid_active:
+                if now - self._last_gate_log_ts >= 60.0:
+                    self._last_gate_log_ts = now
+                    log.info(
+                        "[grid][1h-drop-gate] 1h高=%.2f 当前=%.2f ↓%.2f%%，gate活跃（防1h下行接刀）",
+                        _hi_1h, mid, (_hi_1h - mid) / _hi_1h * 100,
+                    )
+                return None
 
-        # ── 10e-3. 1h快速上涨硬止进SHORT方向（P3, round35）
-        # 与LONG的1h-drop-gate对称：SHORT策略在价格已从1h低点上涨>1%时，
-        # 同样存在S7盲区（S7仅在距1h低点<20bps时生效），
-        # 此门槛防止中期上行行情中持续空头接刀
-        if self._is_short and not self._grid_active and _lo_1h > 0 and mid > _lo_1h * 1.01:
-            log.info(
-                "[grid][1h-rise-gate] 1h低=%.2f 当前=%.2f ↑%.2f%%，暂停新SHORT格（防1h上行接刀）",
-                _lo_1h, mid, (mid - _lo_1h) / _lo_1h * 100,
-            )
-            return None
+        # ── 10e-3. 1h快速上涨硬止进SHORT方向（P3, round35；滞回环+日志节流 round36）
+        # 与LONG的1h-drop-gate对称；滞回环：entry=1.010（涨1%触发），exit=1.005（回落0.5%释放）
+        if self._is_short and _lo_1h > 0:
+            if mid > _lo_1h * 1.010:
+                self._short_rise_gate = True
+            elif mid <= _lo_1h * 1.005:
+                self._short_rise_gate = False
+            if self._short_rise_gate and not self._grid_active:
+                if now - self._last_gate_log_ts >= 60.0:
+                    self._last_gate_log_ts = now
+                    log.info(
+                        "[grid][1h-rise-gate] 1h低=%.2f 当前=%.2f ↑%.2f%%，gate活跃（防1h上行接刀）",
+                        _lo_1h, mid, (mid - _lo_1h) / _lo_1h * 100,
+                    )
+                return None
 
         # ── 10f. 开仓节流 gate（2026-04-22 改进 2）
         # 问题：13:18:19-13:18:29 10 秒内连续 3 次 buy，堆仓到 0.9 张（触发 sell 勉强盈利）

@@ -1,19 +1,19 @@
 {
-  "ran_at": "2026-04-24 04:00 UTC",
-  "eth_price": "N/A（沙盒环境API不可达）",
+  "ran_at": "2026-04-25 05:00 UTC",
+  "eth_price": "N/A (API不可访问)",
   "eth_24h_change_pct": "N/A",
-  "fear_greed_index": "N/A（沙盒环境API不可达）",
+  "fear_greed_index": "N/A (API不可访问)",
   "funding_rate": "N/A",
-  "market_summary": "沙盒环境无法访问外部API，市场数据不可获取。基于策略逻辑对称性进行代码改进。",
-  "decision": "第35轮：新增SHORT方向1h快速上涨硬止进gate——从1h低点上涨>1%时暂停新SHORT格（与LONG的1h-drop-gate完全对称）",
+  "market_summary": "沙盒环境，外部API均不可访问，无法获取实时市场数据。根据历史35轮迭代状态判断：策略P0/P1全部完成，P2/P3积累中。本轮专注1h gate稳健性改进。",
+  "decision": "第36轮：为1h方向gate（drop/rise）添加滞回环（hysteresis）和日志节流——entry阈值0.99/1.01，exit阈值0.995/1.005，日志每60s一次防每tick刷屏",
   "param_changes": [],
   "code_changes": [
     {
       "file": "quant/strategy/grid_pro.py",
-      "summary": "在10e-2 LONG drop-gate之后插入10e-3 SHORT rise-gate：price > lo_1h*1.01时阻止新SHORT格开仓，填补SHORT方向S7软信号盲区"
+      "summary": "__init__新增_long_drop_gate/_short_rise_gate/_last_gate_log_ts三个状态变量；将lines 2639-2658的单阈值gate替换为双阈值滞回环版本（entry=0.99/1.01，exit=0.995/1.005），日志节流60s/次"
     }
   ],
-  "risk_notes": "外部API在沙盒环境不可达，所有市场数据均无法实时验证；实盘1h-drop/rise-gate触发率仍未知",
-  "next_focus": "验证1h-drop-gate和1h-rise-gate的触发率（grep '[1h-drop-gate]\\|[1h-rise-gate]' logs/*.log | wc -l），期望每天5-20次；若超过50次则阈值0.99/1.01过严",
-  "round_number": 35
+  "risk_notes": "gate滞回环引入5bps宽松区：价格在-0.5%~-1.0%之间时gate维持上次状态（可能比单阈值多开或少开一次格）；这是可接受的权衡，比单阈值在边界反复开关更稳定",
+  "next_focus": "P3候选：若实盘数据可访问，验证gate实际触发频次和滞回环释放时机；若profit_spacings<0.4持续，考虑trail_trigger基础值上调1.00→1.10",
+  "round_number": "36"
 }
