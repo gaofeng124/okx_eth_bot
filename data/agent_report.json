@@ -1,19 +1,19 @@
 {
-  "ran_at": "2026-04-25 05:00 UTC",
-  "eth_price": "N/A (API不可访问)",
+  "ran_at": "2026-04-25 06:00 UTC",
+  "eth_price": "N/A（沙盒网络受限，API不可达）",
   "eth_24h_change_pct": "N/A",
-  "fear_greed_index": "N/A (API不可访问)",
+  "fear_greed_index": "N/A（API不可达）",
   "funding_rate": "N/A",
-  "market_summary": "沙盒环境，外部API均不可访问，无法获取实时市场数据。根据历史35轮迭代状态判断：策略P0/P1全部完成，P2/P3积累中。本轮专注1h gate稳健性改进。",
-  "decision": "第36轮：为1h方向gate（drop/rise）添加滞回环（hysteresis）和日志节流——entry阈值0.99/1.01，exit阈值0.995/1.005，日志每60s一次防每tick刷屏",
+  "market_summary": "外部API（OKX/alternative.me）在沙盒环境中不可访问，无实时市场数据。基于代码状态巡检判断：策略架构完整，36轮迭代积累，P0/P1全部解决，当前处于P3精细优化阶段。",
+  "decision": "第37轮：VOLATILE宽限期区分——VOLATILE瞬时ATR激增给90s宽限（原60s），方向性danger regime（TRENDING_DOWN/UP）保持60s，硬止损-1.5U不变",
   "param_changes": [],
   "code_changes": [
     {
       "file": "quant/strategy/grid_pro.py",
-      "summary": "__init__新增_long_drop_gate/_short_rise_gate/_last_gate_log_ts三个状态变量；将lines 2639-2658的单阈值gate替换为双阈值滞回环版本（entry=0.99/1.01，exit=0.995/1.005），日志节流60s/次"
+      "summary": "_bearish_regime_since宽限期：VOLATILE场景60s→90s，TRENDING danger保持60s，log格式加入grace_sec字段便于审计"
     }
   ],
-  "risk_notes": "gate滞回环引入5bps宽松区：价格在-0.5%~-1.0%之间时gate维持上次状态（可能比单阈值多开或少开一次格）；这是可接受的权衡，比单阈值在边界反复开关更稳定",
-  "next_focus": "P3候选：若实盘数据可访问，验证gate实际触发频次和滞回环释放时机；若profit_spacings<0.4持续，考虑trail_trigger基础值上调1.00→1.10",
-  "round_number": "36"
+  "risk_notes": "外部API网络受限导致无法实时监控市场；所有P3改进均未经实盘数据验证；VOLATILE 90s宽限在极端单边行情中可能多持仓30s增加额外亏损（但-1.5U硬止损兜底）",
+  "next_focus": "P3：若能访问实盘日志，验证gate日志节流效果（每min≤1条）和profit_spacings EWMA分布（期望0.4-0.8格均值）",
+  "round_number": 37
 }

@@ -2217,10 +2217,12 @@ class GridProStrategy(TickStrategy):
                     self._bearish_regime_since = now
                     log.info("[grid] Regime=%s 宽限期开始，持仓等待TP或价格恢复", regime.value)
                 elapsed = now - self._bearish_regime_since
-                if elapsed > 60.0 or unrealized < -1.5:
+                # VOLATILE 是瞬时 ATR 激增（非方向性），给 90s 等待消散；方向性 danger regime 保持 60s
+                _grace_sec = 90.0 if regime == Regime.VOLATILE else 60.0
+                if elapsed > _grace_sec or unrealized < -1.5:
                     log.warning(
-                        "[grid] Regime=%s 宽限到期 elapsed=%.0fs unreal=%.3fU，平仓",
-                        regime.value, elapsed, unrealized,
+                        "[grid] Regime=%s 宽限到期 elapsed=%.0fs/%.0fs unreal=%.3fU，平仓",
+                        regime.value, elapsed, _grace_sec, unrealized,
                     )
                     self._emergency_close(f"regime_{regime.value}_t{elapsed:.0f}s", mid)
             else:
