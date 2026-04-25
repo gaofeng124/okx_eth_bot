@@ -1,19 +1,19 @@
 {
-  "ran_at": "2026-04-25 06:00 UTC",
-  "eth_price": "N/A（沙盒网络受限，API不可达）",
+  "ran_at": "2026-04-25 07:00 UTC",
+  "eth_price": "N/A (沙盒网络受限)",
   "eth_24h_change_pct": "N/A",
-  "fear_greed_index": "N/A（API不可达）",
+  "fear_greed_index": "N/A (API不可达)",
   "funding_rate": "N/A",
-  "market_summary": "外部API（OKX/alternative.me）在沙盒环境中不可访问，无实时市场数据。基于代码状态巡检判断：策略架构完整，36轮迭代积累，P0/P1全部解决，当前处于P3精细优化阶段。",
-  "decision": "第37轮：VOLATILE宽限期区分——VOLATILE瞬时ATR激增给90s宽限（原60s），方向性danger regime（TRENDING_DOWN/UP）保持60s，硬止损-1.5U不变",
+  "market_summary": "沙盒环境无法访问OKX/FGI外部API。基于历史37轮积累：所有P0/P1已解决，当前系统处于P3精细化阶段。ETH永续合约网格策略参数稳健，VOLATILE宽限期(round37)、1h gate滞回环(round36)、WS指数退避(round33)均已就位。",
+  "decision": "round38：_adaptive_trail_trigger 升级为两级自适应——avg<0.25格时trigger步长+0.20（vs原+0.10），RANGING上界1.20→1.25，防止极低利润场景下trail连续压低TP价格",
   "param_changes": [],
   "code_changes": [
     {
       "file": "quant/strategy/grid_pro.py",
-      "summary": "_bearish_regime_since宽限期：VOLATILE场景60s→90s，TRENDING danger保持60s，log格式加入grace_sec字段便于审计"
+      "summary": "_adaptive_trail_trigger：新增avg<0.25极低利润层级(+0.20步)，RANGING hi从1.20→1.25，两级自适应比单级更精准抑制trail偷盈利"
     }
   ],
-  "risk_notes": "外部API网络受限导致无法实时监控市场；所有P3改进均未经实盘数据验证；VOLATILE 90s宽限在极端单边行情中可能多持仓30s增加额外亏损（但-1.5U硬止损兜底）",
-  "next_focus": "P3：若能访问实盘日志，验证gate日志节流效果（每min≤1条）和profit_spacings EWMA分布（期望0.4-0.8格均值）",
-  "round_number": 37
+  "risk_notes": "沙盒环境外部API不可达，实盘效果无法实时监控；两级触发仅在有≥5次TP成交数据后生效，冷启动期无影响",
+  "next_focus": "若avg<0.25层级命中频繁（grep 'adaptive trigger.*0.20'日志），说明极低利润场景真实存在；进一步考虑提高初始TP放置乘数或减小ATR联动的atr_ratio下界(0.8→0.85)",
+  "round_number": "38"
 }

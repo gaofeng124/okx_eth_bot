@@ -1530,20 +1530,26 @@ class GridProStrategy(TickStrategy):
         """根据近期TP成交利润（格宽倍数，EWMA加权）动态调整追踪触发门槛。
 
         metric: profit_spacings = abs(fill_px - vwap) / spacing
-          < 0.4格均值 → TP 锁利太少（trigger 触发太早/offset 太紧）→ 放宽 trigger +0.10
-          > 0.8格均值 → 市场延伸后才成交（RANGING 中易被回撤）→ 收紧 trigger -0.05
+          < 0.25格均值 → 利润极低（trail过早触发偷盈利）→ 放宽 trigger +0.20（两级自适应，round38）
+          < 0.40格均值 → 利润偏低 → 放宽 trigger +0.10
+          > 0.80格均值 → 市场延伸后才成交（RANGING 中易被回撤）→ 收紧 trigger -0.05
           中间范围 → 保持 base_trigger，不干预
+
+        两级自适应（round38）：avg<0.25 比 avg<0.40 更激进（+0.20 vs +0.10），
+        防止极低利润场景下 trail 连续拉低 TP 价格。
 
         至少需要 5 次成交数据才启用自适应，否则直接返回 base。
         边界按 Regime 独立：
-          RANGING  : [0.85, 1.20]（base 1.00，震荡市不过度放宽以免错过锁利）
+          RANGING  : [0.85, 1.25]（base 1.00；hi 1.20→1.25，为 +0.20 步留足空间）
           TRENDING : [1.00, 1.50]（base 1.20，趋势市上界放宽捕获更大延伸）
         """
         avg = self._ewma_profit_avg()
         if avg is None:
             return base_trigger
-        lo, hi = (0.85, 1.20) if is_ranging else (1.00, 1.50)
-        if avg < 0.4:
+        lo, hi = (0.85, 1.25) if is_ranging else (1.00, 1.50)
+        if avg < 0.25:
+            adapted = min(base_trigger + 0.20, hi)
+        elif avg < 0.4:
             adapted = min(base_trigger + 0.10, hi)
         elif avg > 0.8:
             adapted = max(base_trigger - 0.05, lo)
