@@ -1566,20 +1566,27 @@ class GridProStrategy(TickStrategy):
         """根据近期TP成交利润（格宽倍数，EWMA加权）动态调整追踪步长（trail_offset）。
 
         metric: profit_spacings = abs(fill_px - vwap) / spacing
+          < 0.25格均值 → 利润极低（trail 触发后 TP 应落在更远处）→ 放宽 +0.06（两级，round39）
           < 0.30格均值 → 利润偏低（offset 太紧，TP 离市价太近）→ 放宽 +0.03
           > 0.80格均值 → 利润充足但延迟锁定 → 收紧 -0.03
           中间范围 → 保持 base_offset，不干预
 
+        两级自适应（round39）：与 _adaptive_trail_trigger 的 avg<0.25 极低层对称。
+        当 trigger 因极低利润放宽至 1.20（需价格超出 TP 1.2 格才启动 trail），
+        offset 也同步放宽 +0.06，确保 trail 触发后 TP 落点够远、不被立即回撤夹击。
+
         至少需要 5 次成交数据才启用自适应，否则直接返回 base。
         边界按 Regime 独立：
-          RANGING  : [0.35, 0.65]（base 0.50，下界贴近 0.35 允许震荡市快速锁利）
-          TRENDING : [0.45, 0.75]（base 0.60，趋势市保留更宽间距追更大利润）
+          RANGING  : [0.35, 0.65]（base 0.50；+0.06 → 0.56，仍在上界内）
+          TRENDING : [0.45, 0.75]（base 0.60；+0.06 → 0.66，仍在上界内）
         """
         avg = self._ewma_profit_avg()
         if avg is None:
             return base_offset
         lo, hi = (0.35, 0.65) if is_ranging else (0.45, 0.75)
-        if avg < 0.30:
+        if avg < 0.25:
+            adapted = min(base_offset + 0.06, hi)
+        elif avg < 0.30:
             adapted = min(base_offset + 0.03, hi)
         elif avg > 0.80:
             adapted = max(base_offset - 0.03, lo)

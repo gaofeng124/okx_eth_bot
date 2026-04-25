@@ -1,19 +1,19 @@
 {
-  "ran_at": "2026-04-25 07:00 UTC",
-  "eth_price": "N/A (沙盒网络受限)",
+  "ran_at": "2026-04-25 08:00 UTC",
+  "eth_price": "N/A (沙盒网络无法访问OKX API)",
   "eth_24h_change_pct": "N/A",
   "fear_greed_index": "N/A (API不可达)",
   "funding_rate": "N/A",
-  "market_summary": "沙盒环境无法访问OKX/FGI外部API。基于历史37轮积累：所有P0/P1已解决，当前系统处于P3精细化阶段。ETH永续合约网格策略参数稳健，VOLATILE宽限期(round37)、1h gate滞回环(round36)、WS指数退避(round33)均已就位。",
-  "decision": "round38：_adaptive_trail_trigger 升级为两级自适应——avg<0.25格时trigger步长+0.20（vs原+0.10），RANGING上界1.20→1.25，防止极低利润场景下trail连续压低TP价格",
+  "market_summary": "沙盒环境外部API全部不可达，无法获取实时行情。系统本轮专注代码优化（round39），与市场状态无关。",
+  "decision": "round39：_adaptive_trail_offset 升级为两级自适应——avg<0.25格时offset步长+0.06（vs原+0.03），与round38的trigger两级对称，防止极低利润场景下trail触发后TP落点过近被立即回撤夹击",
   "param_changes": [],
   "code_changes": [
     {
       "file": "quant/strategy/grid_pro.py",
-      "summary": "_adaptive_trail_trigger：新增avg<0.25极低利润层级(+0.20步)，RANGING hi从1.20→1.25，两级自适应比单级更精准抑制trail偷盈利"
+      "summary": "_adaptive_trail_offset 新增 avg<0.25 极低利润层（+0.06步长），与_adaptive_trail_trigger两级设计对称；avg 0.25-0.30仍为+0.03，边界[0.35,0.65]/[0.45,0.75]不变"
     }
   ],
-  "risk_notes": "沙盒环境外部API不可达，实盘效果无法实时监控；两级触发仅在有≥5次TP成交数据后生效，冷启动期无影响",
-  "next_focus": "若avg<0.25层级命中频繁（grep 'adaptive trigger.*0.20'日志），说明极低利润场景真实存在；进一步考虑提高初始TP放置乘数或减小ATR联动的atr_ratio下界(0.8→0.85)",
-  "round_number": "38"
+  "risk_notes": "外部API完全不可达（沙盒网络隔离），无法监控实盘风险。ATR联动下界0.8仍允许RANGING×ATR组合压缩TP至0.64×基准，但本轮优先完成trigger/offset对称性，ATR bound留待round40。",
+  "next_focus": "round40：_update_tp中ATR ratio下界 max(0.8,...) → max(0.85,...)，防止极低ATR场景将RANGING TP压缩至64%基准（当前：RANGING×0.8×ATR_0.8=0.64×tp_mult）",
+  "round_number": "39"
 }
