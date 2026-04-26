@@ -1,38 +1,48 @@
 # ETH量化系统升级计划
 
-## 本次（2026-04-26 第四十三/四十四轮）完成
+## 本次（2026-04-26 第四十五轮）完成
 
-### grid_pro.py：_adaptive_trail_trigger 第三层 + _adaptive_trail_offset 对称扩展（round43+44）
+### grid_pro.py：trail基准参数提取为命名类常量 + RANGING base_trigger 1.00→1.05（round45）
 
 **问题**：
-- round38 引入两层低利润保护（avg<0.25 → +0.20; avg<0.40 → +0.10）
-- round41 引入 avg>0.80 层收紧（trigger-0.05, offset-0.03）
-- 边缘情况：当 avg>1.00（利润丰厚，市场有明显趋势延伸）时，仅收紧 -0.05/-0.03 力度不足
-- trail 启动时机仍偏晚，导致在快速延伸行情中过早锁利后错失剩余幅度
+- `_maybe_trail_tp` 中 `1.00 / 1.20 / 0.50 / 0.60` 四个 inline 字面量散落代码，
+  每次调参须同时修改代码+注释+docstring，易遗漏导致不一致
+- RANGING base_trigger=1.00 时，在 neutral 区（avg 0.40~0.80）trail 触发条件为
+  "price > TP + 1.00×spacing"，即价格超过 TP 恰好一个格宽就触发 trail
+  → 在震荡行情中短暂超冲（+1.0格）后立刻回落的情形会触发 trail，把TP拉低，
+    导致本可自然成交的TP被提前以较低价格成交
 
-**修复（round43+44）**：
+**修复（round45）**：
 
-`_adaptive_trail_trigger`：
-- 新增第三层：`elif avg > 1.0: adapted = max(base_trigger - 0.10, lo)`
-- 原 `avg > 0.8 → -0.05` 保留（现作为中间层）
-- RANGING 效果：base=1.00，avg>1.0 → trigger=0.90（下界0.85内安全）
-- TRENDING 效果：base=1.20，avg>1.0 → trigger=1.10（下界1.00内安全）
+新增四个类常量（统一管理）：
+```python
+_RANGING_TRAIL_BASE_TRIGGER  = 1.05   # round45: 1.00→1.05
+_RANGING_TRAIL_BASE_OFFSET   = 0.50
+_TRENDING_TRAIL_BASE_TRIGGER = 1.20
+_TRENDING_TRAIL_BASE_OFFSET  = 0.60
+```
 
-`_adaptive_trail_offset`：
-- 新增对称第三层：`elif avg > 1.0: adapted = max(base_offset - 0.05, lo)`
-- 原 `avg > 0.80 → -0.03` 保留（现作为中间层）
-- RANGING 效果：base=0.50，avg>1.0 → offset=0.45（下界0.35内安全）
-- TRENDING 效果：base=0.60，avg>1.0 → offset=0.55（下界0.45内安全）
+`_maybe_trail_tp` 改用常量引用，不再用 inline 数字。
 
-**效果预期**：
-- 利润丰厚时（avg>1.0格），trail 更早启动（trigger低）且落点更紧（offset小），锁利更迅速
-- 正常震荡市（avg 0.4~0.8）：不触发任何层，行为与之前完全一致
-- 低利润市（avg<0.25）：仍受 +0.20/+0.06 保护，防止过早追踪
-- 对 total_w<0.5（round42 门槛）的保护无影响：avg=None 时直接返回 base，所有层均跳过
+**完整 RANGING adaptive trigger 映射（round45 后）**：
+| avg 范围    | 最终 trigger                        | 含义                      |
+|------------|-------------------------------------|---------------------------|
+| avg < 0.25 | min(1.05+0.20, 1.25) = **1.25**     | 极低利润→trail极晚触发    |
+| avg < 0.40 | min(1.05+0.10, 1.25) = **1.15**     | 低利润→trail延迟触发      |
+| 0.40~0.80  | **1.05** (base，neutral zone)       | 正常→比旧值多5%缓冲       |
+| avg > 0.80 | max(1.05-0.05, 0.85) = **1.00**     | 充足利润→trail与旧base持平|
+| avg > 1.00 | max(1.05-0.10, 0.85) = **0.95**     | 丰厚利润→激进trail        |
+
+效果：neutral 区 trigger 从 1.00→1.05，减少短暂超冲误触发；
+      高利润区 avg>0.80 的 trigger 从 0.95→1.00，轻微保守（但 avg>1.0 仍激进 0.95）。
 
 ---
 
 ## 历史完成
+
+### 第四十三/四十四轮（2026-04-26）
+- [x] grid_pro.py: _adaptive_trail_trigger 第三层（avg>1.00→trigger-0.10）
+- [x] grid_pro.py: _adaptive_trail_offset 对称第三层（avg>1.00→offset-0.05）
 
 ### 第四十二轮（2026-04-26）
 - [x] grid_pro.py: _ewma_profit_avg total_w 最低有效权重门槛（_EWMA_MIN_TOTAL_W=0.5）
@@ -43,62 +53,43 @@
 ### 第四十轮（2026-04-25）
 - [x] grid_pro.py: _update_tp ATR ratio 下界收紧 0.8 → 0.85
 
-### 第三十九轮（2026-04-25）
-- [x] grid_pro.py: _adaptive_trail_offset 两级自适应（avg<0.25 → offset +0.06）
+### 第三十五~三十九轮（2026-04-24~25）
+- [x] grid_pro.py: 多轮 trail 自适应层完善、1h方向gate滞回环
 
-### 第三十八轮（2026-04-25）
-- [x] grid_pro.py: _adaptive_trail_trigger 两级自适应（avg<0.25 → trigger +0.20）
-
-### 第三十七轮（2026-04-25）
-- [x] grid_pro.py: VOLATILE宽限期区分（60s→90s）
-
-### 第三十六轮（2026-04-25）
-- [x] grid_pro.py: 1h方向gate滞回环（hysteresis）+ 日志节流
-
-### 第三十五轮（2026-04-24）
-- [x] grid_pro.py: SHORT方向1h快速上涨硬止进gate
-
-### 第三十四轮（2026-04-24）
-- [x] grid_pro.py: LONG方向1h价格下跌硬止进门槛
-
-### 第三十三轮（2026-04-24）
-- [x] runner.py: WS重连指数退避
-- [x] grid_pro.py: profit_spacings EWMA上限帽
-
-### 第一~三十二轮（2026-04-18~24）
+### 第一~三十四轮（2026-04-18~24）
 - [x] 全部P0/P1问题已解决
 
 ---
 
 ## 待解决问题（按优先级）
 
-- [ ] P3: round45：RANGING base_trigger 1.00 → 1.05（需实盘 trigger 激活频率确认）
-  - 若 trigger 频繁在 0.95~1.05 之间命中，说明 1.00 偏紧，调高可减少误触发
-  - 约束：avg>1.0 层已将 RANGING trigger 压至 0.90，base 调高后 avg>1.0 效果更显著
-
-- [ ] P3: round46：观察 avg>1.0 分支实际触发频率（需实盘日志 profit_spacings 分布）
-  - 预期：震荡市（avg~0.5）不触发；趋势延伸市（avg>1.0）触发频率约 10~20%
-  - 若触发过频，考虑上调至 avg>1.2
-
-- [ ] P3: RANGING trail_offset 0.50 基准是否需调整（依赖实盘数据）
+- [ ] P3: round46：观察 avg>1.0 层实际触发频率
+  - 若触发频率 < 10%（avg 很少超过 1.0），考虑将阈值降至 avg>0.90 以更积极捕获
+  - 若触发过频（>30%），可考虑上调至 avg>1.2
+- [ ] P3: round47：评估 neutral trigger 1.05 效果
+  - 观察实盘 "adaptive trigger: base=1.05 → X.XX" 日志，确认 avg 0.40~0.80 的频率
+  - 若 neutral 区 trail 仍频繁（avg 0.60~0.80 段），可考虑再升至 1.08~1.10
+- [ ] P3: RANGING trail_offset 0.50 基准待实盘数据验证
+- [ ] P3: 动态止盈：根据波动率调整每格利润（已有 ATR ratio 联动，是否需进一步增强）
 
 ## 下次优先行动
 
-1. **round45**：若有实盘日志，分析 trigger 命中价格分布
-   - 若 80%+ 成交在 trigger 0.95~1.05 之间：调高 base_trigger 至 1.05
-   - 若无日志：实现 RANGING base_trigger 1.00 → 1.05（低风险参数调整）
+1. **round46**：若有实盘日志，分析 `adaptive trigger` 日志中 avg 分布
+   - 重点：avg>1.0 层触发了多少次 vs 总trail次数
+   - 若 avg>1.0 从未触发：trail 在正常行情中都是 base 触发，1.05 够用
+   - 若无日志：实施 TRENDING trigger bounds 收紧（lo 1.00→1.05）以与 RANGING 对称
 
-2. 观察 round43/44 的 avg>1.0 分支：
-   - 在 runner.py 日志中搜索 "adaptive trigger" / "adaptive offset"，核实 -0.10/-0.05 层是否被激活
+2. **观察**：`_RANGING_TRAIL_BASE_TRIGGER=1.05` 后 trail 总触发次数变化
+   - 预期：neutral 区 trail 次数↓ 10~15%，TP 自然成交率↑
 
 ## 系统评估
 - **策略有效性**：9/10
-  - 43/44轮迭代；全P0/P1已解决；自适应 trail 系统现为完整四层结构
-  - trigger: [avg<0.25: +0.20] → [avg<0.40: +0.10] → [avg>0.80: -0.05] → [avg>1.00: -0.10]
-  - offset:  [avg<0.25: +0.06] → [avg<0.30: +0.03] → [avg>0.80: -0.03] → [avg>1.00: -0.05]
-  - 四层覆盖全利润区间，中间"平静带"(0.40~0.80)不干预保持稳定
+  - 45轮迭代；全P0/P1已解决；trail 参数结构化为类常量
+  - trigger四层: [1.25] → [1.15] → [1.05 neutral] → [1.00] → [0.95]
+  - offset四层:  [0.56] → [0.53] → [0.50 neutral] → [0.47] → [0.45]
 - **当前主要风险**：
-  1. 外部API网络受限（沙盒环境，无实时市场监控）
-  2. 实盘日志无法访问（avg>1.0 触发频率未经验证，但边界安全）
-  3. avg>1.0 场景若触发过频（市场长期高利润），trigger=0.90 在 RANGING 接近下界 0.85，需监控
-- **累计运行轮次**：43（含round44合并执行）
+  1. 外部API网络受限（沙盒，无实时市场监控）
+  2. 实盘日志无法访问（avg>1.0 分支触发频率未经验证）
+  3. base_trigger 1.05 在 avg>0.80 层给 1.00（与旧 neutral base 相同），
+     如果 avg>0.80 市场实际上很少触发 trail，这是合理的防御
+- **累计运行轮次**：45

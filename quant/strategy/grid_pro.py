@@ -319,6 +319,13 @@ class GridProStrategy(TickStrategy):
     _ENTRY_RETRY_BACKOFF    = [5.0, 15.0, 60.0, 300.0]  # 失败后等待秒数
     _TP_TRAIL_MIN_INTERVAL  = 30.0   # TP 追踪最小间隔（秒），避免频繁 cancel/replace
     _EMERGENCY_CLOSE_FEE_BPS = 7.0  # 紧急平仓费率：入场 maker(2bps) + 市价 taker(5bps)
+    # TP 追踪基准参数（round45：提取为命名常量便于集中调参；RANGING trigger 1.00→1.05）
+    # RANGING 1.05：在neutral区（avg 0.40~0.80）需价格超出TP 1.05格才触发trail，
+    #   比旧值1.00多5%缓冲，减少震荡行情中的误触发（短暂超冲后回落不触trail）
+    _RANGING_TRAIL_BASE_TRIGGER  = 1.05
+    _RANGING_TRAIL_BASE_OFFSET   = 0.50
+    _TRENDING_TRAIL_BASE_TRIGGER = 1.20
+    _TRENDING_TRAIL_BASE_OFFSET  = 0.60
 
     def __init__(
         self,
@@ -1330,7 +1337,7 @@ class GridProStrategy(TickStrategy):
 
         RANGING 模式（震荡行情，自适应调整后实际值可能偏大）：
           base trail_offset  = 0.50（adaptive范围 [0.35, 0.65]）
-          base _trail_trigger = 1.00（adaptive范围 [0.85, 1.25]）
+          base _trail_trigger = 1.05（adaptive范围 [0.85, 1.25]）
           _min_trail_iv  = 20s（节流更短，允许更频繁追踪）
 
         趋势模式（价格持续延伸，需要更大缓冲）：
@@ -1362,8 +1369,14 @@ class GridProStrategy(TickStrategy):
         #   效果：大多数 TP 在原位自然成交 → 拿全额 60bps
         #   保留：极端延伸时（>1 格宽）仍可锁利，不丢过大盈利
         # 修复方向 B：加大 offset 到 0.50 / 0.60（真 trail 时留更多空间）
-        _trail_offset  = self._adaptive_trail_offset(0.50 if _is_ranging else 0.60, _is_ranging)
-        _trail_trigger = self._adaptive_trail_trigger(1.00 if _is_ranging else 1.20, _is_ranging)
+        _trail_offset  = self._adaptive_trail_offset(
+            self._RANGING_TRAIL_BASE_OFFSET if _is_ranging else self._TRENDING_TRAIL_BASE_OFFSET,
+            _is_ranging,
+        )
+        _trail_trigger = self._adaptive_trail_trigger(
+            self._RANGING_TRAIL_BASE_TRIGGER if _is_ranging else self._TRENDING_TRAIL_BASE_TRIGGER,
+            _is_ranging,
+        )
 
         if self._is_short:
             # short：市场继续下跌时向下追踪 TP，锁住更多空头利润
@@ -1556,7 +1569,7 @@ class GridProStrategy(TickStrategy):
 
         至少需要 5 次成交数据才启用自适应，否则直接返回 base。
         边界按 Regime 独立：
-          RANGING  : [0.85, 1.25]（base 1.00；hi 1.20→1.25，为 +0.20 步留足空间）
+          RANGING  : [0.85, 1.25]（base 1.05；avg<0.25→1.25=hi cap；avg>1.00→0.95）
           TRENDING : [1.00, 1.50]（base 1.20，趋势市上界放宽捕获更大延伸）
         """
         avg = self._ewma_profit_avg()
