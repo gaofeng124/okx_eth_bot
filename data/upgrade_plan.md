@@ -1,31 +1,41 @@
 # ETH量化系统升级计划
 
-## 本次（2026-04-26 第四十二轮）完成
+## 本次（2026-04-26 第四十三/四十四轮）完成
 
-### grid_pro.py：_ewma_profit_avg 最低有效权重门槛（P3）
+### grid_pro.py：_adaptive_trail_trigger 第三层 + _adaptive_trail_offset 对称扩展（round43+44）
 
 **问题**：
-- round41 引入 Regime-specific 半衰期（RANGING=900s, TRENDING=2700s）
-- 边缘情况：重启后 `_replay_tp_history` 加载昨日日志（最多40条）
-- 若上次成交在 4+ 个半衰期前（RANGING: >1h, TRENDING: >3h），所有桶数据权重趋近于 0
-- `total_w > 0.0` 检查仍通过（浮点数非零），EWMA 退化为等权均值（等价于忽略时间衰减）
-- 退化后的 avg 可能与实际近期市场利润无关，误触发 trigger/offset 自适应调整
+- round38 引入两层低利润保护（avg<0.25 → +0.20; avg<0.40 → +0.10）
+- round41 引入 avg>0.80 层收紧（trigger-0.05, offset-0.03）
+- 边缘情况：当 avg>1.00（利润丰厚，市场有明显趋势延伸）时，仅收紧 -0.05/-0.03 力度不足
+- trail 启动时机仍偏晚，导致在快速延伸行情中过早锁利后错失剩余幅度
 
-**修复（round42）**：
-- 新增类常量 `_EWMA_MIN_TOTAL_W = 0.5`
-- 计算完 total_w 后增加检查：`if total_w < 0.5: return None`
-- RANGING（900s）：等效"桶内所有数据均超 ~3600s（1h）前"时失效，退回 base 参数
-- TRENDING（2700s）：等效"均超 ~10800s（3h）前"时失效
-- 0.5门槛具体含义：相当于至少有 0.5 个"刚填充"样本等值的有效权重
+**修复（round43+44）**：
+
+`_adaptive_trail_trigger`：
+- 新增第三层：`elif avg > 1.0: adapted = max(base_trigger - 0.10, lo)`
+- 原 `avg > 0.8 → -0.05` 保留（现作为中间层）
+- RANGING 效果：base=1.00，avg>1.0 → trigger=0.90（下界0.85内安全）
+- TRENDING 效果：base=1.20，avg>1.0 → trigger=1.10（下界1.00内安全）
+
+`_adaptive_trail_offset`：
+- 新增对称第三层：`elif avg > 1.0: adapted = max(base_offset - 0.05, lo)`
+- 原 `avg > 0.80 → -0.03` 保留（现作为中间层）
+- RANGING 效果：base=0.50，avg>1.0 → offset=0.45（下界0.35内安全）
+- TRENDING 效果：base=0.60，avg>1.0 → offset=0.55（下界0.45内安全）
 
 **效果预期**：
-- 消除重启后旧数据误驱动 adaptive trail 的边缘情况
-- 无最近成交时，trail 自动退回 base_trigger=1.00 / base_offset=0.50，更保守
-- 对正常运行（每小时 3+ 次RANGING成交）无任何影响：total_w >> 0.5
+- 利润丰厚时（avg>1.0格），trail 更早启动（trigger低）且落点更紧（offset小），锁利更迅速
+- 正常震荡市（avg 0.4~0.8）：不触发任何层，行为与之前完全一致
+- 低利润市（avg<0.25）：仍受 +0.20/+0.06 保护，防止过早追踪
+- 对 total_w<0.5（round42 门槛）的保护无影响：avg=None 时直接返回 base，所有层均跳过
 
 ---
 
 ## 历史完成
+
+### 第四十二轮（2026-04-26）
+- [x] grid_pro.py: _ewma_profit_avg total_w 最低有效权重门槛（_EWMA_MIN_TOTAL_W=0.5）
 
 ### 第四十一轮（2026-04-26）
 - [x] grid_pro.py: _ewma_profit_avg Regime-specific EWMA 半衰期（RANGING=900s/TRENDING=2700s）
@@ -62,37 +72,33 @@
 
 ## 待解决问题（按优先级）
 
-- [ ] P3: round43：_adaptive_trail_trigger 第三层扩展（avg>1.00 → trigger-0.10）
-  - 当前：avg>0.80 只减 0.05（base 1.00→0.95）
-  - 扩展：avg>1.00 → 减 0.10（base 1.00→0.90，积极追踪延伸行情）
-  - 约束：RANGING 下界 0.85 不变，avg>1.00 分支边界安全
-  - 风险：无实盘数据验证，保守起见仍需观察
+- [ ] P3: round45：RANGING base_trigger 1.00 → 1.05（需实盘 trigger 激活频率确认）
+  - 若 trigger 频繁在 0.95~1.05 之间命中，说明 1.00 偏紧，调高可减少误触发
+  - 约束：avg>1.0 层已将 RANGING trigger 压至 0.90，base 调高后 avg>1.0 效果更显著
 
-- [ ] P3: round44：_adaptive_trail_offset 对称扩展（avg>1.00 → offset-0.05）
-  - 与 round43 trigger 扩展配套：利润丰厚时允许 trail 落点更紧
-  - 依赖 round43 先上线
+- [ ] P3: round46：观察 avg>1.0 分支实际触发频率（需实盘日志 profit_spacings 分布）
+  - 预期：震荡市（avg~0.5）不触发；趋势延伸市（avg>1.0）触发频率约 10~20%
+  - 若触发过频，考虑上调至 avg>1.2
 
-- [ ] P3: RANGING base_trigger 1.00 → 1.05（需实盘 trigger 触发频率数据确认）
-
-- [ ] P3: RANGING trail_offset 0.50 是否过宽/过紧（需实盘 profit_spacings 分布）
+- [ ] P3: RANGING trail_offset 0.50 基准是否需调整（依赖实盘数据）
 
 ## 下次优先行动
 
-1. **round43**：实现 `_adaptive_trail_trigger` 第三层（avg>1.00 → trigger-0.10）
-   - 修改 `_adaptive_trail_trigger` 中 `elif avg > 0.8:` 分支
-   - 改为两级：`avg > 1.0 → -0.10`，`avg > 0.8 → -0.05`
-   - 同步更新 docstring bound 注释
+1. **round45**：若有实盘日志，分析 trigger 命中价格分布
+   - 若 80%+ 成交在 trigger 0.95~1.05 之间：调高 base_trigger 至 1.05
+   - 若无日志：实现 RANGING base_trigger 1.00 → 1.05（低风险参数调整）
 
-2. 若有实盘日志：对比 round42 前后 adaptive trail 激活频率变化
-   - 预期：旧数据误触发减少，base trail 使用率略升
+2. 观察 round43/44 的 avg>1.0 分支：
+   - 在 runner.py 日志中搜索 "adaptive trigger" / "adaptive offset"，核实 -0.10/-0.05 层是否被激活
 
 ## 系统评估
 - **策略有效性**：9/10
-  - 42轮迭代；全P0/P1已解决；P3精细化积累中
-  - round42 的 total_w 门槛是 EWMA 稳健性的基础保障
-  - 所有P3待验证项需实盘日志，沙盒环境无法直接监控
+  - 43/44轮迭代；全P0/P1已解决；自适应 trail 系统现为完整四层结构
+  - trigger: [avg<0.25: +0.20] → [avg<0.40: +0.10] → [avg>0.80: -0.05] → [avg>1.00: -0.10]
+  - offset:  [avg<0.25: +0.06] → [avg<0.30: +0.03] → [avg>0.80: -0.03] → [avg>1.00: -0.05]
+  - 四层覆盖全利润区间，中间"平静带"(0.40~0.80)不干预保持稳定
 - **当前主要风险**：
   1. 外部API网络受限（沙盒环境，无实时市场监控）
-  2. 实盘日志无法访问（所有P3优化均未经实盘数据验证）
-  3. total_w=0.5 门槛在极低频成交市场下会延迟自适应激活（但比噪声均值更安全）
-- **累计运行轮次**：42
+  2. 实盘日志无法访问（avg>1.0 触发频率未经验证，但边界安全）
+  3. avg>1.0 场景若触发过频（市场长期高利润），trigger=0.90 在 RANGING 接近下界 0.85，需监控
+- **累计运行轮次**：43（含round44合并执行）

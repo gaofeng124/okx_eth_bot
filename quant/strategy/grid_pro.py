@@ -1545,10 +1545,13 @@ class GridProStrategy(TickStrategy):
         metric: profit_spacings = abs(fill_px - vwap) / spacing
           < 0.25格均值 → 利润极低（trail过早触发偷盈利）→ 放宽 trigger +0.20（两级自适应，round38）
           < 0.40格均值 → 利润偏低 → 放宽 trigger +0.10
-          > 0.80格均值 → 市场延伸后才成交（RANGING 中易被回撤）→ 收紧 trigger -0.05
+          > 1.00格均值 → 利润丰厚（市场延伸充分）→ 更激进收紧 trigger -0.10（round43）
+          > 0.80格均值 → 利润充足 → 收紧 trigger -0.05
           中间范围 → 保持 base_trigger，不干预
 
-        两级自适应（round38）：avg<0.25 比 avg<0.40 更激进（+0.20 vs +0.10），
+        三级自适应（round43）：avg>1.00 层比 avg>0.80 更激进（-0.10 vs -0.05），
+        利润丰厚时 trail 更早启动，锁住更大延伸行情。
+        两级低利润层（round38）：avg<0.25 比 avg<0.40 更激进（+0.20 vs +0.10），
         防止极低利润场景下 trail 连续拉低 TP 价格。
 
         至少需要 5 次成交数据才启用自适应，否则直接返回 base。
@@ -1564,6 +1567,8 @@ class GridProStrategy(TickStrategy):
             adapted = min(base_trigger + 0.20, hi)
         elif avg < 0.4:
             adapted = min(base_trigger + 0.10, hi)
+        elif avg > 1.0:
+            adapted = max(base_trigger - 0.10, lo)
         elif avg > 0.8:
             adapted = max(base_trigger - 0.05, lo)
         else:
@@ -1581,12 +1586,15 @@ class GridProStrategy(TickStrategy):
         metric: profit_spacings = abs(fill_px - vwap) / spacing
           < 0.25格均值 → 利润极低（trail 触发后 TP 应落在更远处）→ 放宽 +0.06（两级，round39）
           < 0.30格均值 → 利润偏低（offset 太紧，TP 离市价太近）→ 放宽 +0.03
+          > 1.00格均值 → 利润丰厚，与 trigger 收紧配套 → 更激进收紧 -0.05（round44）
           > 0.80格均值 → 利润充足但延迟锁定 → 收紧 -0.03
           中间范围 → 保持 base_offset，不干预
 
         两级自适应（round39）：与 _adaptive_trail_trigger 的 avg<0.25 极低层对称。
         当 trigger 因极低利润放宽至 1.20（需价格超出 TP 1.2 格才启动 trail），
         offset 也同步放宽 +0.06，确保 trail 触发后 TP 落点够远、不被立即回撤夹击。
+        三级对称扩展（round44）：与 trigger 的 avg>1.00 层配套，
+        利润丰厚时 trail TP 落点也更紧（-0.05），使锁利更迅速。
 
         至少需要 5 次成交数据才启用自适应，否则直接返回 base。
         边界按 Regime 独立：
@@ -1601,6 +1609,8 @@ class GridProStrategy(TickStrategy):
             adapted = min(base_offset + 0.06, hi)
         elif avg < 0.30:
             adapted = min(base_offset + 0.03, hi)
+        elif avg > 1.0:
+            adapted = max(base_offset - 0.05, lo)
         elif avg > 0.80:
             adapted = max(base_offset - 0.03, lo)
         else:

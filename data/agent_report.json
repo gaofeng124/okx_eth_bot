@@ -1,19 +1,19 @@
 {
-  "ran_at": "2026-04-26 01:00 UTC",
-  "eth_price": "N/A (sandbox network restricted)",
+  "ran_at": "2026-04-26 02:00 UTC",
+  "eth_price": "N/A (网络受限)",
   "eth_24h_change_pct": "N/A",
-  "fear_greed_index": "N/A (API unreachable)",
-  "funding_rate": "N/A",
-  "market_summary": "沙盒环境无法访问外部API，市场数据不可用。基于round41历史改进继续P3精细化。",
-  "decision": "round42：_ewma_profit_avg 新增 total_w 最低有效权重门槛（_EWMA_MIN_TOTAL_W=0.5），防止重启后旧数据（>4个半衰期）低权重误触发自适应逻辑，无填充数据时自动退回 base trail 参数。",
+  "fear_greed_index": "N/A (网络受限)",
+  "funding_rate": "N/A (网络受限)",
+  "market_summary": "沙盒环境网络受限，无法获取实时数据。延续第42轮策略评估：系统P0/P1全部解决，当前处于P3精细化阶段。自适应追踪层数完整，逻辑健壮。",
+  "decision": "round43+44：_adaptive_trail_trigger 新增第三层（avg>1.00→trigger-0.10），_adaptive_trail_offset 对称扩展（avg>1.00→offset-0.05），利润丰厚时更激进追踪锁利。",
   "param_changes": [],
   "code_changes": [
     {
       "file": "quant/strategy/grid_pro.py",
-      "summary": "_ewma_profit_avg 新增 total_w < 0.5 → return None 检查：RANGING超1h/TRENDING超3h无成交时 EWMA 自动失效退回 base 参数，消除等权旧数据退化为噪声均值的边缘情况"
+      "summary": "_adaptive_trail_trigger 增加第三层 avg>1.0→-0.10（比原 avg>0.8→-0.05 更激进），_adaptive_trail_offset 增加对称第三层 avg>1.0→-0.05，两者配套确保高利润场景下 trail 更早更紧地锁定延伸盈利。"
     }
   ],
-  "risk_notes": "沙盒环境无实盘日志，所有P3优化均未经实盘数据验证；total_w=0.5门槛在极低频成交场景（RANGING下每小时<3次TP）可能略微推迟自适应激活，但比噪声EWMA更安全。",
-  "next_focus": "round43：评估 _adaptive_trail_trigger avg>0.80 分支的第三层扩展（avg>1.00 → trigger-0.10），高利润场景下更激进追踪；或验证 RANGING trail_offset 0.50 基准是否需调整。",
-  "round_number": "42"
+  "risk_notes": "沙盒环境：实盘日志不可访问，avg>1.0 场景实际触发频率未知；若市场多为低利润震荡（avg<0.5），新分支不会被触发，风险极低。",
+  "next_focus": "round45：评估 RANGING base_trigger 1.00 是否可上调至 1.05（需实盘 trigger 激活频率数据）；或观察 round43/44 上线后 avg>1.0 触发的实际效果。",
+  "round_number": "43"
 }
