@@ -1,26 +1,19 @@
 {
-  "ran_at": "2026-04-26 03:00 UTC",
+  "ran_at": "2026-04-26 04:00 UTC",
   "eth_price": "N/A (沙盒网络受限)",
   "eth_24h_change_pct": "N/A",
   "fear_greed_index": "N/A (API不可达)",
   "funding_rate": "N/A",
-  "market_summary": "沙盒环境无法访问外部API，无法获取实时市场数据。本轮专注代码结构优化：提取trail基准参数为命名类常量，RANGING trigger由1.00升至1.05，减少震荡行情误触发。",
-  "decision": "round45：提取_RANGING/_TRENDING_TRAIL_BASE_TRIGGER/OFFSET为类常量，RANGING base_trigger 1.00→1.05（减少震荡中短暂超冲触发trail偷盈）。",
-  "param_changes": [
-    {
-      "param": "_RANGING_TRAIL_BASE_TRIGGER",
-      "old": 1.00,
-      "new": 1.05,
-      "reason": "RANGING中性区(avg 0.40~0.80)需价格超出TP 1.05格才触发trail，比旧值多5%缓冲，防止短暂超冲后回落误触trail导致TP价格被拉低。adaptive层仍有效：avg>1.0→0.95，avg>0.80→1.00，avg<0.40→1.15，avg<0.25→1.25"
-    }
-  ],
+  "market_summary": "沙盒环境无法访问外部API，无实时市场数据。基于45轮历史迭代状态评估：系统已完成所有P0/P1修复，trail参数结构化完毕，本轮专注P3设计不变式强化。",
+  "decision": "round46：TRENDING trail bounds下界提升，trigger lo 1.00→1.05，offset lo 0.45→0.50，建立'TRENDING trail永不比RANGING基线更激进'设计不变式。",
+  "param_changes": [],
   "code_changes": [
     {
       "file": "quant/strategy/grid_pro.py",
-      "summary": "新增_RANGING/_TRENDING_TRAIL_BASE_TRIGGER/OFFSET四个类常量（集中管理），_maybe_trail_tp改用常量引用替换inline字面量，_adaptive_trail_trigger docstring更新base说明"
+      "summary": "_adaptive_trail_trigger TRENDING lo 1.00→1.05；_adaptive_trail_offset TRENDING lo 0.45→0.50；TRENDING trail参数下界与RANGING base对齐，确立设计不变式（round46）"
     }
   ],
-  "risk_notes": "沙盒无实时数据，base_trigger从1.00到1.05是小幅参数收紧，理论上减少误触发但不影响大行情的trail能力（adaptive层avg>1.0仍将trigger压至0.95）。",
-  "next_focus": "round46：若有实盘日志，分析adaptive trigger日志中avg分布；若avg>1.0层触发频率<10%，考虑将avg>1.0阈值调至avg>0.90以更积极捕获高利润行情。",
-  "round_number": "45"
+  "risk_notes": "沙盒无实盘数据，avg>1.0触发频率未验证；TRENDING lo提升不影响当前行为（实际最低1.10/0.55均高于新lo），为未来参数调整提供安全floor。",
+  "next_focus": "round47：若获得实盘日志，分析adaptive trigger日志中avg分布；观察neutral区(0.40~0.80) trail触发次数变化；评估trigger 1.05后是否需进一步调至1.08。",
+  "round_number": "46"
 }

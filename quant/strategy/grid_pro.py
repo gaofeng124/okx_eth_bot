@@ -1570,12 +1570,13 @@ class GridProStrategy(TickStrategy):
         至少需要 5 次成交数据才启用自适应，否则直接返回 base。
         边界按 Regime 独立：
           RANGING  : [0.85, 1.25]（base 1.05；avg<0.25→1.25=hi cap；avg>1.00→0.95）
-          TRENDING : [1.00, 1.50]（base 1.20，趋势市上界放宽捕获更大延伸）
+          TRENDING : [1.05, 1.50]（base 1.20；lo 与 RANGING base 对齐，确保趋势trail不比震荡基线更激进）
+        round46: TRENDING lo 1.00→1.05，设计不变式：TRENDING trail trigger 永不低于 RANGING base trigger。
         """
         avg = self._ewma_profit_avg()
         if avg is None:
             return base_trigger
-        lo, hi = (0.85, 1.25) if is_ranging else (1.00, 1.50)
+        lo, hi = (0.85, 1.25) if is_ranging else (1.05, 1.50)
         if avg < 0.25:
             adapted = min(base_trigger + 0.20, hi)
         elif avg < 0.4:
@@ -1612,12 +1613,13 @@ class GridProStrategy(TickStrategy):
         至少需要 5 次成交数据才启用自适应，否则直接返回 base。
         边界按 Regime 独立：
           RANGING  : [0.35, 0.65]（base 0.50；+0.06 → 0.56，仍在上界内）
-          TRENDING : [0.45, 0.75]（base 0.60；+0.06 → 0.66，仍在上界内）
+          TRENDING : [0.50, 0.75]（base 0.60；lo 与 RANGING base 对齐，确保趋势trail不比震荡基线更激进）
+        round46: TRENDING lo 0.45→0.50，设计不变式：TRENDING trail offset 永不低于 RANGING base offset。
         """
         avg = self._ewma_profit_avg()
         if avg is None:
             return base_offset
-        lo, hi = (0.35, 0.65) if is_ranging else (0.45, 0.75)
+        lo, hi = (0.35, 0.65) if is_ranging else (0.50, 0.75)
         if avg < 0.25:
             adapted = min(base_offset + 0.06, hi)
         elif avg < 0.30:
