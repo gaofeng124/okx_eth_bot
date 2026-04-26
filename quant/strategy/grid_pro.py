@@ -311,7 +311,7 @@ class GridProStrategy(TickStrategy):
     _FUNDING_RATE_MAX       = 0.0005 # 资金费率 > 0.05% 时抑制做多
     _STOP_COUNT_1H_LIMIT    = 3      # 1小时内触发3次止损 → 延长冷静期
     _EXTENDED_COOLDOWN      = 3600.0 # 延长冷静期 1h
-    _PROFIT_HALF_LIFE       = 1800.0 # TP利润EWMA半衰期 30min（近期成交指数权重更高）
+    _PROFIT_HALF_LIFE       = 1800.0 # 保留为参考值；_ewma_profit_avg 已改为 Regime-specific（RANGING=900s, TRENDING=2700s）
     _MIN_EQUITY_USDT        = 15.0   # 账户权益低于此值停止一切操作
     _MAX_MARGIN_USE_PCT     = 0.70   # 最多使用 70% 账户权益做保证金
     _LIQ_WARN_DISTANCE      = 0.05   # 距爆仓价 < 5% 时告警并紧急平仓
@@ -1328,16 +1328,17 @@ class GridProStrategy(TickStrategy):
           long  → 市场上行 mid > tp + _trail_trigger*spacing，TP 上移到 mid - trail_offset*spacing
           short → 市场下行 mid < tp - _trail_trigger*spacing，TP 下移到 mid + trail_offset*spacing
 
-        RANGING 模式（震荡行情价格延伸有限，需快速锁利）：
-          trail_offset  = 0.15（更紧，TP 离市价更近）
-          _trail_trigger = 0.30（更敏感，价格超出 TP 0.3 格即开始追踪）
+        RANGING 模式（震荡行情，自适应调整后实际值可能偏大）：
+          base trail_offset  = 0.50（adaptive范围 [0.35, 0.65]）
+          base _trail_trigger = 1.00（adaptive范围 [0.85, 1.25]）
           _min_trail_iv  = 20s（节流更短，允许更频繁追踪）
 
-        趋势模式（价格可能持续延伸，给 TP 更多空间）：
-          trail_offset  = 0.25（更宽，追更大利润）
-          _trail_trigger = 0.40（标准，避免趋势中过早锁定）
+        趋势模式（价格持续延伸，需要更大缓冲）：
+          base trail_offset  = 0.60（adaptive范围 [0.45, 0.75]）
+          base _trail_trigger = 1.20（adaptive范围 [1.00, 1.50]）
           _min_trail_iv  = 30s（_TP_TRAIL_MIN_INTERVAL，避免频繁 API 调用）
 
+        trigger/offset 经 _adaptive_trail_trigger / _adaptive_trail_offset 按 EWMA 利润动态调整。
         成功追踪后重置 _tp_placed_ts，给TP新的超时窗口（顺势行情中不应过早止损）。
         """
         if not self._tp_order_id or self._tp_price <= 0:
@@ -1400,16 +1401,19 @@ class GridProStrategy(TickStrategy):
                 self._last_tp_trail_ts = now   # 触发条件成立即更新节流（与short路径对齐）
 
     def _ewma_profit_avg(self) -> float | None:
-        """时间衰减加权 EWMA：近期 TP 利润格宽倍数，半衰期 30min。
+        """时间衰减加权 EWMA：近期 TP 利润格宽倍数，半衰期按 Regime 动态切换。
 
         权重 w_i = exp(-λ·(t_now - t_i))，λ = ln2 / half_life。
         按当前 Regime 使用对应 bucket（RANGING/TRENDING 分开维护，互不干扰）。
+        RANGING  → 900s（15min）：震荡市节奏快，需快速响应利润变化
+        TRENDING → 2700s（45min）：趋势市成交稀疏，平滑避免过拟合极少样本
         5次以下数据时返回 None。
         """
         bucket = self._tp_current_bucket
         if len(bucket) < 5:
             return None
-        lam = math.log(2.0) / self._PROFIT_HALF_LIFE
+        half_life = 900.0 if self._current_regime == Regime.RANGING else 2700.0
+        lam = math.log(2.0) / half_life
         now = time.time()
         total_w = 0.0
         total_wv = 0.0

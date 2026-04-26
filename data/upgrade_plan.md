@@ -1,29 +1,38 @@
 # ETH量化系统升级计划
 
-## 本次（2026-04-25 第四十轮）完成
+## 本次（2026-04-26 第四十一轮）完成
 
-### grid_pro.py：_update_tp ATR ratio 下界收紧 0.8 → 0.85（P3根源修复）
+### grid_pro.py：_ewma_profit_avg Regime-specific EWMA 半衰期（P3）
 
 **问题**：
-- round38/39 为极低利润场景添加了 `avg<0.25` 两级自适应（trigger+0.20，offset+0.06）
-- 但极低利润的根源之一是 ATR ratio 下界过低（0.80），导致极低ATR时：
-  - RANGING TP = 0.8（模式因子）× 0.80（ATR ratio最小值）× tp_mult = **0.64 × tp_mult**
-  - TP被压至基准的64%，价格轻微回撤即触发fill_tp，realized profit偏低
-  - 进而导致 profit_spacings EWMA持续低位，命中 avg<0.25 两级自适应分支
+- round38/39 两级自适应依赖 `_ewma_profit_avg()` 的 EWMA 利润平均值
+- 原实现对所有 Regime 使用固定 1800s（30min）半衰期
+- RANGING 震荡市：TP 成交频繁（每几分钟一次），1800s 半衰期导致响应迟钝
+  - 30min 前的旧数据仍有 50% 权重，在震荡市可能拖慢自适应对利润变化的反应
+- TRENDING 趋势市：TP 成交稀疏（每10-30min甚至更久），1800s 半衰期可能过短
+  - 5次样本可能分布在几小时内，短半衰期会大幅降低较旧样本权重，样本有效性降低
 
-**修复（round40）**：
-- `max(0.8, min(1.3, ...))` → `max(0.85, min(1.3, ...))`
-- 极低ATR时 RANGING TP = 0.8 × 0.85 × tp_mult = **0.68 × tp_mult**（+6.25%）
-- 根源修复优于依赖自适应补偿；round38/39仍保留作为极端场景兜底
+**修复（round41）**：
+- `lam = math.log(2.0) / self._PROFIT_HALF_LIFE` → `half_life = 900 if RANGING else 2700`
+- RANGING  → 900s（15min）：震荡市快速适应，近15min数据权重≥50%
+- TRENDING → 2700s（45min）：趋势市平滑，近45min数据权重≥50%，避免少量异常fill扰动
+
+**额外清理**：
+- 修正 `_maybe_trail_tp` docstring 中严重过时的旧参数值
+  - RANGING trail_offset 文档值 0.15 → 实际值 0.50（round22 Direction A 修复后未更新）
+  - RANGING trail_trigger 文档值 0.30 → 实际值 1.00
 
 **效果预期**：
-- 极低ATR环境下TP落点提升6.25%，每格利润期望值改善
-- avg<0.25 极低利润分支触发频率应下降（验证方式：实盘日志）
-- 趋势模式不受影响（ratio=1.0×1.0×tp_mult，下界不起作用）
+- RANGING 市：自适应 trigger/offset 对近期利润低谷/高峰响应速度提升 2x
+- TRENDING 市：自适应更平滑，避免单次极端 fill 扭曲 EWMA
+- avg<0.25 极低利润分支：在 RANGING 市下可更快识别并响应（900s vs 1800s）
 
 ---
 
 ## 历史完成
+
+### 第四十轮（2026-04-25）
+- [x] grid_pro.py: _update_tp ATR ratio 下界收紧 0.8 → 0.85（极低ATR时TP提升6.25%）
 
 ### 第三十九轮（2026-04-25）
 - [x] grid_pro.py: _adaptive_trail_offset 两级自适应（avg<0.25 → offset +0.06）
@@ -54,38 +63,38 @@
 
 ## 待解决问题（按优先级）
 
-- [ ] P3: round41：验证 avg<0.25 两级自适应实际命中频率
-  - 方法：`grep 'adaptive trigger.*0\.20\|adaptive offset.*0\.06' data/logs/*.log | wc -l`
-  - 预期：round40修复后，每天命中次数应少于round38/39修复前（若实盘日志可访问）
+- [ ] P3: round42：评估 _tp_profits_ranging maxlen=20 在 RANGING 高频成交下是否充足
+  - 场景：每小时成交6次 → 20条数据 = 3.3小时；900s半衰期有效窗口约1.5小时（4.5半衰期）
+  - 若3.3小时内有≥20条数据，最旧数据已被剔除（超出bucket），但时间衰减已很低（<1%权重）
+  - 评估：maxlen=20 对 RANGING 市是否需要提升到 25 或 30
 
-- [ ] P3: 若 avg<0.25 频率仍高，检查 profit_spacings 计算是否存在系统性偏低
-  - 方法：从 analysis.jsonl 提取 fill_tp 的 profit_spacings 字段分布（中位数、P25）
-  - 阈值：若 P25 < 0.25，说明根源在fill价格计算而非ATR
+- [ ] P3: round43：若有实盘日志，验证 avg<0.25 在 RANGING 下新半衰期（900s）命中频率
+  - 方法：比较 round40 前（1800s）vs round41 后（900s）的 adaptive log 条目
 
-- [ ] P3: RANGING base_trigger 从 1.00 → 1.05（若trail仍频繁导致TP偏低）
-  - 需实盘数据确认 trail 触发率后决定
+- [ ] P3: RANGING base_trigger 1.00 → 1.05（需实盘数据确认 trail 触发率后决定）
 
-- [ ] P3: _maybe_trail_tp 的 RANGING trail_offset 基准（0.15）是否过紧
-  - 若实盘中 TP 被追踪后频繁被回撤吃掉，考虑 0.15 → 0.18
+- [ ] P3: _maybe_trail_tp 的 RANGING trail_offset 基准（0.50）是否过宽/过紧
+  - 若 TP 被追踪后频繁被回撤吃掉，考虑 0.50 → 0.55
+  - 需实盘 profit_spacings 分布数据
 
 ## 下次优先行动
 
-1. **round41（下次运行）**：若能访问实盘日志，验证以下指标：
-   - `grep 'adaptive' data/logs/*.log` 统计 avg<0.25 触发次数
-   - `python3 -c "import json; [print(l) for l in open('data/analysis.jsonl') if 'fill_tp' in l]" | head -20`
-   - 对比 round40 前后 profit_spacings 分布
+1. **round42**：评估 `_tp_profits_ranging` maxlen 是否应从 20 升至 25
+   - 逻辑：900s 半衰期 × 3 = 2700s 有效窗口；若 RANGING 下每15min一次TP = 3次/小时
+   - 2700s内最多9条数据，maxlen=20 富余；若每5min一次 = 12次/小时，20条 = 100min，OK
+   - 结论：当前 maxlen=20 在合理成交频率下足够；暂缓
 
-2. **若无实盘日志**：转向下一个 P3 候选：
-   - RANGING trail_offset 基准值评估（当前 0.15）
-   - 或检查 _update_tp 中 `max(0.4, min(2.0, ...))` 外层边界是否合理
+2. **round42 候选**：检查 `_restore_atr_baseline` 逻辑，确认冷启动时 ATR 基线恢复正确
+   - 若基线为0且当前格宽极低（DEAD regime），ratio=0.85（下界），TP偏低
+   - 验证：启动时第一次 _place_grid 前 _atr_baseline 是否已正确恢复
 
 ## 系统评估
 - **策略有效性**：9/10
-  - 40轮迭代；全P0/P1已解决；P3根源修复积累中
-  - round40 解决 ATR ratio 下界过低（根源），round38/39 两级自适应作为兜底
+  - 41轮迭代；全P0/P1已解决；P3精细化积累中
+  - round41 Regime-specific EWMA 半衰期是自适应系统的底层参数优化
   - 所有P3待验证项需实盘日志，沙盒环境无法直接监控
 - **当前主要风险**：
   1. 外部API网络受限（沙盒环境，无实时市场监控）
   2. 实盘日志无法访问（所有P3优化均未经实盘数据验证）
-  3. ATR联动链路（spacing→baseline→ratio→eff_mult）复杂，潜在边界条件未完全测试
-- **累计运行轮次**：40
+  3. RANGING 900s 半衰期在极低频成交市场（<5次/小时）可能导致 bucket 样本老化过快
+- **累计运行轮次**：41

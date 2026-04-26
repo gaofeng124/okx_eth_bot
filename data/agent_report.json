@@ -1,19 +1,19 @@
 {
-  "ran_at": "2026-04-25 09:00 UTC",
-  "eth_price": "N/A(API受限)",
+  "ran_at": "2026-04-26 00:00 UTC",
+  "eth_price": "N/A（沙盒网络受限）",
   "eth_24h_change_pct": "N/A",
-  "fear_greed_index": "N/A(API受限)",
-  "funding_rate": "N/A(API受限)",
-  "market_summary": "沙盒环境API受限，无法获取实时行情。根据历史39轮迭代状态：系统处于持续优化阶段，P0/P1全部解决，本轮专注P3根源修复。",
-  "decision": "round40：_update_tp ATR ratio下界从0.8收紧至0.85，修复极低ATR环境下RANGING TP被压至0.64×tp_mult的根源问题，提升至0.68×tp_mult（+6.25%）",
+  "fear_greed_index": "N/A",
+  "funding_rate": "N/A",
+  "market_summary": "沙盒环境网络受限，无法获取实时行情。基于代码逻辑分析进行策略优化。40轮迭代后P0/P1全部已解决，本轮聚焦P3精细化：EWMA利润自适应对震荡/趋势市使用统一30min半衰期存在失配，RANGING市场节奏快应快速响应，TRENDING成交稀疏应平滑。",
+  "decision": "round41：_ewma_profit_avg 改为 Regime-specific EWMA 半衰期（RANGING=900s/15min，TRENDING=2700s/45min），使 adaptive trail 在不同市场节奏下自适应速度更合理；同步修正 _maybe_trail_tp 严重过时的 docstring（旧值0.15/0.30 → 实际值0.50/1.00）",
   "param_changes": [],
   "code_changes": [
     {
       "file": "quant/strategy/grid_pro.py",
-      "summary": "_update_tp第1311行：max(0.8, min(1.3, ...)) → max(0.85, min(1.3, ...))，极低ATR场景TP下界提升，减少对round38/39两级自适应的依赖"
+      "summary": "_ewma_profit_avg 将固定半衰期1800s改为 Regime-specific（RANGING=900s，TRENDING=2700s）；修正 _maybe_trail_tp docstring 中过时的旧参数值（0.15/0.30→0.50/1.00）"
     }
   ],
-  "risk_notes": "ATR ratio下界0.85后，极低ATR时RANGING TP = 0.8×0.85×tp_mult = 0.68×tp_mult，仍低于基准但比0.64有改善；实盘日志仍无法访问，所有P3优化无法通过数据验证",
-  "next_focus": "round41：验证avg<0.25触发频率是否合理；若实盘数据可访问，从analysis.jsonl提取profit_spacings分布检查是否偏高",
-  "round_number": "40"
+  "risk_notes": "1. 沙盒环境无法验证实盘效果，所有P3优化仍需实盘日志确认；2. EWMA半衰期缩短对RANGING意味着少量极端fill可能暂时扰动自适应，但5次最低样本门槛+[lo,hi]边界提供保护；3. TRENDING半衰期延长到45min意味着利润模式变化时自适应响应更慢，适合趋势持续场景但对趋势反转可能滞后",
+  "next_focus": "round42：若能访问实盘日志，验证RANGING bucket的900s vs 1800s半衰期下adaptive trigger实际命中频率变化；若无日志，评估 _tp_profits_ranging/trending 的 maxlen=20 在不同成交频率下是否合适（RANGING高频可能需要maxlen=30以保证半衰期内有足够数据点）",
+  "round_number": "41"
 }
