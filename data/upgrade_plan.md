@@ -1,38 +1,37 @@
 # ETH量化系统升级计划
 
-## 本次（2026-04-26 第四十一轮）完成
+## 本次（2026-04-26 第四十二轮）完成
 
-### grid_pro.py：_ewma_profit_avg Regime-specific EWMA 半衰期（P3）
+### grid_pro.py：_ewma_profit_avg 最低有效权重门槛（P3）
 
 **问题**：
-- round38/39 两级自适应依赖 `_ewma_profit_avg()` 的 EWMA 利润平均值
-- 原实现对所有 Regime 使用固定 1800s（30min）半衰期
-- RANGING 震荡市：TP 成交频繁（每几分钟一次），1800s 半衰期导致响应迟钝
-  - 30min 前的旧数据仍有 50% 权重，在震荡市可能拖慢自适应对利润变化的反应
-- TRENDING 趋势市：TP 成交稀疏（每10-30min甚至更久），1800s 半衰期可能过短
-  - 5次样本可能分布在几小时内，短半衰期会大幅降低较旧样本权重，样本有效性降低
+- round41 引入 Regime-specific 半衰期（RANGING=900s, TRENDING=2700s）
+- 边缘情况：重启后 `_replay_tp_history` 加载昨日日志（最多40条）
+- 若上次成交在 4+ 个半衰期前（RANGING: >1h, TRENDING: >3h），所有桶数据权重趋近于 0
+- `total_w > 0.0` 检查仍通过（浮点数非零），EWMA 退化为等权均值（等价于忽略时间衰减）
+- 退化后的 avg 可能与实际近期市场利润无关，误触发 trigger/offset 自适应调整
 
-**修复（round41）**：
-- `lam = math.log(2.0) / self._PROFIT_HALF_LIFE` → `half_life = 900 if RANGING else 2700`
-- RANGING  → 900s（15min）：震荡市快速适应，近15min数据权重≥50%
-- TRENDING → 2700s（45min）：趋势市平滑，近45min数据权重≥50%，避免少量异常fill扰动
-
-**额外清理**：
-- 修正 `_maybe_trail_tp` docstring 中严重过时的旧参数值
-  - RANGING trail_offset 文档值 0.15 → 实际值 0.50（round22 Direction A 修复后未更新）
-  - RANGING trail_trigger 文档值 0.30 → 实际值 1.00
+**修复（round42）**：
+- 新增类常量 `_EWMA_MIN_TOTAL_W = 0.5`
+- 计算完 total_w 后增加检查：`if total_w < 0.5: return None`
+- RANGING（900s）：等效"桶内所有数据均超 ~3600s（1h）前"时失效，退回 base 参数
+- TRENDING（2700s）：等效"均超 ~10800s（3h）前"时失效
+- 0.5门槛具体含义：相当于至少有 0.5 个"刚填充"样本等值的有效权重
 
 **效果预期**：
-- RANGING 市：自适应 trigger/offset 对近期利润低谷/高峰响应速度提升 2x
-- TRENDING 市：自适应更平滑，避免单次极端 fill 扭曲 EWMA
-- avg<0.25 极低利润分支：在 RANGING 市下可更快识别并响应（900s vs 1800s）
+- 消除重启后旧数据误驱动 adaptive trail 的边缘情况
+- 无最近成交时，trail 自动退回 base_trigger=1.00 / base_offset=0.50，更保守
+- 对正常运行（每小时 3+ 次RANGING成交）无任何影响：total_w >> 0.5
 
 ---
 
 ## 历史完成
 
+### 第四十一轮（2026-04-26）
+- [x] grid_pro.py: _ewma_profit_avg Regime-specific EWMA 半衰期（RANGING=900s/TRENDING=2700s）
+
 ### 第四十轮（2026-04-25）
-- [x] grid_pro.py: _update_tp ATR ratio 下界收紧 0.8 → 0.85（极低ATR时TP提升6.25%）
+- [x] grid_pro.py: _update_tp ATR ratio 下界收紧 0.8 → 0.85
 
 ### 第三十九轮（2026-04-25）
 - [x] grid_pro.py: _adaptive_trail_offset 两级自适应（avg<0.25 → offset +0.06）
@@ -63,38 +62,37 @@
 
 ## 待解决问题（按优先级）
 
-- [ ] P3: round42：评估 _tp_profits_ranging maxlen=20 在 RANGING 高频成交下是否充足
-  - 场景：每小时成交6次 → 20条数据 = 3.3小时；900s半衰期有效窗口约1.5小时（4.5半衰期）
-  - 若3.3小时内有≥20条数据，最旧数据已被剔除（超出bucket），但时间衰减已很低（<1%权重）
-  - 评估：maxlen=20 对 RANGING 市是否需要提升到 25 或 30
+- [ ] P3: round43：_adaptive_trail_trigger 第三层扩展（avg>1.00 → trigger-0.10）
+  - 当前：avg>0.80 只减 0.05（base 1.00→0.95）
+  - 扩展：avg>1.00 → 减 0.10（base 1.00→0.90，积极追踪延伸行情）
+  - 约束：RANGING 下界 0.85 不变，avg>1.00 分支边界安全
+  - 风险：无实盘数据验证，保守起见仍需观察
 
-- [ ] P3: round43：若有实盘日志，验证 avg<0.25 在 RANGING 下新半衰期（900s）命中频率
-  - 方法：比较 round40 前（1800s）vs round41 后（900s）的 adaptive log 条目
+- [ ] P3: round44：_adaptive_trail_offset 对称扩展（avg>1.00 → offset-0.05）
+  - 与 round43 trigger 扩展配套：利润丰厚时允许 trail 落点更紧
+  - 依赖 round43 先上线
 
-- [ ] P3: RANGING base_trigger 1.00 → 1.05（需实盘数据确认 trail 触发率后决定）
+- [ ] P3: RANGING base_trigger 1.00 → 1.05（需实盘 trigger 触发频率数据确认）
 
-- [ ] P3: _maybe_trail_tp 的 RANGING trail_offset 基准（0.50）是否过宽/过紧
-  - 若 TP 被追踪后频繁被回撤吃掉，考虑 0.50 → 0.55
-  - 需实盘 profit_spacings 分布数据
+- [ ] P3: RANGING trail_offset 0.50 是否过宽/过紧（需实盘 profit_spacings 分布）
 
 ## 下次优先行动
 
-1. **round42**：评估 `_tp_profits_ranging` maxlen 是否应从 20 升至 25
-   - 逻辑：900s 半衰期 × 3 = 2700s 有效窗口；若 RANGING 下每15min一次TP = 3次/小时
-   - 2700s内最多9条数据，maxlen=20 富余；若每5min一次 = 12次/小时，20条 = 100min，OK
-   - 结论：当前 maxlen=20 在合理成交频率下足够；暂缓
+1. **round43**：实现 `_adaptive_trail_trigger` 第三层（avg>1.00 → trigger-0.10）
+   - 修改 `_adaptive_trail_trigger` 中 `elif avg > 0.8:` 分支
+   - 改为两级：`avg > 1.0 → -0.10`，`avg > 0.8 → -0.05`
+   - 同步更新 docstring bound 注释
 
-2. **round42 候选**：检查 `_restore_atr_baseline` 逻辑，确认冷启动时 ATR 基线恢复正确
-   - 若基线为0且当前格宽极低（DEAD regime），ratio=0.85（下界），TP偏低
-   - 验证：启动时第一次 _place_grid 前 _atr_baseline 是否已正确恢复
+2. 若有实盘日志：对比 round42 前后 adaptive trail 激活频率变化
+   - 预期：旧数据误触发减少，base trail 使用率略升
 
 ## 系统评估
 - **策略有效性**：9/10
-  - 41轮迭代；全P0/P1已解决；P3精细化积累中
-  - round41 Regime-specific EWMA 半衰期是自适应系统的底层参数优化
+  - 42轮迭代；全P0/P1已解决；P3精细化积累中
+  - round42 的 total_w 门槛是 EWMA 稳健性的基础保障
   - 所有P3待验证项需实盘日志，沙盒环境无法直接监控
 - **当前主要风险**：
   1. 外部API网络受限（沙盒环境，无实时市场监控）
   2. 实盘日志无法访问（所有P3优化均未经实盘数据验证）
-  3. RANGING 900s 半衰期在极低频成交市场（<5次/小时）可能导致 bucket 样本老化过快
-- **累计运行轮次**：41
+  3. total_w=0.5 门槛在极低频成交市场下会延迟自适应激活（但比噪声均值更安全）
+- **累计运行轮次**：42

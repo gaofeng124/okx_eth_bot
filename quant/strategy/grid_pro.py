@@ -1400,6 +1400,12 @@ class GridProStrategy(TickStrategy):
                         self._tp_placed_ts = now   # 重置超时计时器：市场上行时不应过早触发止损
                 self._last_tp_trail_ts = now   # 触发条件成立即更新节流（与short路径对齐）
 
+    # 有效权重最低门槛：等效于至少 0.5 个"新鲜"样本（防止桶数据全部超过 4 个半衰期后
+    # 权重趋近于 0，EWMA 退化为等权均值并误触发自适应逻辑）
+    # RANGING 900s：4个半衰期 = 3600s（1小时）→ 超 1h 无成交时自动退回 base
+    # TRENDING 2700s：4个半衰期 = 10800s（3小时）→ 超 3h 无成交时自动退回 base
+    _EWMA_MIN_TOTAL_W = 0.5
+
     def _ewma_profit_avg(self) -> float | None:
         """时间衰减加权 EWMA：近期 TP 利润格宽倍数，半衰期按 Regime 动态切换。
 
@@ -1408,6 +1414,7 @@ class GridProStrategy(TickStrategy):
         RANGING  → 900s（15min）：震荡市节奏快，需快速响应利润变化
         TRENDING → 2700s（45min）：趋势市成交稀疏，平滑避免过拟合极少样本
         5次以下数据时返回 None。
+        total_w < 0.5 时返回 None（桶数据均超 4 个半衰期，退回 base 参数）。
         """
         bucket = self._tp_current_bucket
         if len(bucket) < 5:
@@ -1421,7 +1428,9 @@ class GridProStrategy(TickStrategy):
             w = math.exp(-lam * max(0.0, now - ts))
             total_w += w
             total_wv += w * v
-        return total_wv / total_w if total_w > 0.0 else None
+        if total_w < self._EWMA_MIN_TOTAL_W:
+            return None
+        return total_wv / total_w
 
     @property
     def _tp_current_bucket(self) -> "deque[tuple[float, float]]":

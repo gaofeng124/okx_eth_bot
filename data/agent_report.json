@@ -1,19 +1,19 @@
 {
-  "ran_at": "2026-04-26 00:00 UTC",
-  "eth_price": "N/A（沙盒网络受限）",
+  "ran_at": "2026-04-26 01:00 UTC",
+  "eth_price": "N/A (sandbox network restricted)",
   "eth_24h_change_pct": "N/A",
-  "fear_greed_index": "N/A",
+  "fear_greed_index": "N/A (API unreachable)",
   "funding_rate": "N/A",
-  "market_summary": "沙盒环境网络受限，无法获取实时行情。基于代码逻辑分析进行策略优化。40轮迭代后P0/P1全部已解决，本轮聚焦P3精细化：EWMA利润自适应对震荡/趋势市使用统一30min半衰期存在失配，RANGING市场节奏快应快速响应，TRENDING成交稀疏应平滑。",
-  "decision": "round41：_ewma_profit_avg 改为 Regime-specific EWMA 半衰期（RANGING=900s/15min，TRENDING=2700s/45min），使 adaptive trail 在不同市场节奏下自适应速度更合理；同步修正 _maybe_trail_tp 严重过时的 docstring（旧值0.15/0.30 → 实际值0.50/1.00）",
+  "market_summary": "沙盒环境无法访问外部API，市场数据不可用。基于round41历史改进继续P3精细化。",
+  "decision": "round42：_ewma_profit_avg 新增 total_w 最低有效权重门槛（_EWMA_MIN_TOTAL_W=0.5），防止重启后旧数据（>4个半衰期）低权重误触发自适应逻辑，无填充数据时自动退回 base trail 参数。",
   "param_changes": [],
   "code_changes": [
     {
       "file": "quant/strategy/grid_pro.py",
-      "summary": "_ewma_profit_avg 将固定半衰期1800s改为 Regime-specific（RANGING=900s，TRENDING=2700s）；修正 _maybe_trail_tp docstring 中过时的旧参数值（0.15/0.30→0.50/1.00）"
+      "summary": "_ewma_profit_avg 新增 total_w < 0.5 → return None 检查：RANGING超1h/TRENDING超3h无成交时 EWMA 自动失效退回 base 参数，消除等权旧数据退化为噪声均值的边缘情况"
     }
   ],
-  "risk_notes": "1. 沙盒环境无法验证实盘效果，所有P3优化仍需实盘日志确认；2. EWMA半衰期缩短对RANGING意味着少量极端fill可能暂时扰动自适应，但5次最低样本门槛+[lo,hi]边界提供保护；3. TRENDING半衰期延长到45min意味着利润模式变化时自适应响应更慢，适合趋势持续场景但对趋势反转可能滞后",
-  "next_focus": "round42：若能访问实盘日志，验证RANGING bucket的900s vs 1800s半衰期下adaptive trigger实际命中频率变化；若无日志，评估 _tp_profits_ranging/trending 的 maxlen=20 在不同成交频率下是否合适（RANGING高频可能需要maxlen=30以保证半衰期内有足够数据点）",
-  "round_number": "41"
+  "risk_notes": "沙盒环境无实盘日志，所有P3优化均未经实盘数据验证；total_w=0.5门槛在极低频成交场景（RANGING下每小时<3次TP）可能略微推迟自适应激活，但比噪声EWMA更安全。",
+  "next_focus": "round43：评估 _adaptive_trail_trigger avg>0.80 分支的第三层扩展（avg>1.00 → trigger-0.10），高利润场景下更激进追踪；或验证 RANGING trail_offset 0.50 基准是否需调整。",
+  "round_number": "42"
 }
