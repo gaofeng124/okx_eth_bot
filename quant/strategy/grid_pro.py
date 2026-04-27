@@ -1599,7 +1599,7 @@ class GridProStrategy(TickStrategy):
 
         metric: profit_spacings = abs(fill_px - vwap) / spacing
           < 0.25格均值 → 利润极低（trail 触发后 TP 应落在更远处）→ 放宽 +0.06（两级，round39）
-          < 0.30格均值 → 利润偏低（offset 太紧，TP 离市价太近）→ 放宽 +0.03
+          < 0.35格均值 → 利润偏低（offset 太紧，TP 离市价太近）→ 放宽 +0.03（round47: 0.30→0.35）
           > 1.00格均值 → 利润丰厚，与 trigger 收紧配套 → 更激进收紧 -0.05（round44）
           > 0.80格均值 → 利润充足但延迟锁定 → 收紧 -0.03
           中间范围 → 保持 base_offset，不干预
@@ -1609,6 +1609,9 @@ class GridProStrategy(TickStrategy):
         offset 也同步放宽 +0.06，确保 trail 触发后 TP 落点够远、不被立即回撤夹击。
         三级对称扩展（round44）：与 trigger 的 avg>1.00 层配套，
         利润丰厚时 trail TP 落点也更紧（-0.05），使锁利更迅速。
+        round47：第二低利润层阈值 0.30→0.35，缩小与 trigger 第二层（0.40）的不对称间距。
+        avg 在 [0.30, 0.35) 时 trigger 已放宽 +0.10 但原 offset 不响应；
+        现在 offset 在 [0.25, 0.35) 统一放宽 +0.03，维持两者联动的内在一致性。
 
         至少需要 5 次成交数据才启用自适应，否则直接返回 base。
         边界按 Regime 独立：
@@ -1622,7 +1625,7 @@ class GridProStrategy(TickStrategy):
         lo, hi = (0.35, 0.65) if is_ranging else (0.50, 0.75)
         if avg < 0.25:
             adapted = min(base_offset + 0.06, hi)
-        elif avg < 0.30:
+        elif avg < 0.35:
             adapted = min(base_offset + 0.03, hi)
         elif avg > 1.0:
             adapted = max(base_offset - 0.05, lo)

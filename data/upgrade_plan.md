@@ -1,50 +1,49 @@
 # ETH量化系统升级计划
 
-## 本次（2026-04-26 第四十六轮）完成
+## 本次（2026-04-27 第四十七轮）完成
 
-### grid_pro.py：TRENDING trail bounds 下界对齐 RANGING base（round46）
+### grid_pro.py：_adaptive_trail_offset 第二低利润层阈值 0.30 → 0.35（round47）
 
 **问题**：
-- `_adaptive_trail_trigger` TRENDING lo=1.00，`_adaptive_trail_offset` TRENDING lo=0.45
-- 当前实际最低值为 trigger=1.10 / offset=0.55（均高于旧lo），lo 约束从未生效
-- 但缺乏明确的设计不变式：TRENDING trail 参数调整时，无理论下界保证其不比 RANGING 基线更激进
-- 若未来将 `_TRENDING_TRAIL_BASE_TRIGGER` 降低（如调至 1.10），旧 lo=1.00 会允许
-  avg>1.0 时 trigger 降到 1.00，比 RANGING 基线 1.05 更激进，违反设计意图
+- `_adaptive_trail_trigger` 第二低利润层：avg < 0.40 → trigger +0.10
+- `_adaptive_trail_offset` 第二低利润层：avg < 0.30 → offset +0.03
+- 不对称缺口：avg 在 [0.30, 0.40) 时 trigger 已放宽 +0.10，但 offset 完全不响应
+- 逻辑矛盾：trail 需要更大价格超冲才启动（+0.10），但启动后 TP 落点距离不变
+- 应有设计：trigger 放宽时 offset 应同步放宽，两者联动
 
-**修复（round46）**：
-
+**修复（round47）**：
 ```
-_adaptive_trail_trigger:
-  TRENDING bounds: [1.00, 1.50] → [1.05, 1.50]
-  lo = _RANGING_TRAIL_BASE_TRIGGER = 1.05（精确对齐）
-
 _adaptive_trail_offset:
-  TRENDING bounds: [0.45, 0.75] → [0.50, 0.75]
-  lo = _RANGING_TRAIL_BASE_OFFSET = 0.50（精确对齐）
+  第二低利润层阈值: avg < 0.30 → avg < 0.35
+  效果: avg∈[0.30, 0.35) 时 offset 也放宽 +0.03（与 trigger 的 +0.10 联动）
 ```
 
-**设计不变式（round46 后）**：
-> TRENDING trail trigger ≥ RANGING base trigger（1.05）
-> TRENDING trail offset ≥ RANGING base offset（0.50）
-> 即：趋势行情下的 trail 激进程度永远不超过震荡行情基线
+**修复前后对比**：
+| avg 范围       | trigger delta | offset delta（旧）| offset delta（新）|
+|----------------|--------------|-------------------|-------------------|
+| < 0.25         | +0.20        | +0.06             | +0.06（不变）     |
+| [0.25, 0.30)   | +0.10        | +0.03             | +0.03（不变）     |
+| **[0.30, 0.35)**| **+0.10**   | **0（不响应）**   | **+0.03（修复）** |
+| [0.35, 0.40)   | +0.10        | 0                 | 0（仍存在小缺口） |
+| [0.40, 0.80)   | 0            | 0                 | 0                 |
+| (0.80, 1.00]   | -0.05        | -0.03             | -0.03（不变）     |
+| > 1.00         | -0.10        | -0.05             | -0.05（不变）     |
 
-**完整 bounds 表（round46 后）**：
-| Regime   | 参数    | lo   | base | hi   |
-|----------|---------|------|------|------|
-| RANGING  | trigger | 0.85 | 1.05 | 1.25 |
-| RANGING  | offset  | 0.35 | 0.50 | 0.65 |
-| TRENDING | trigger | 1.05 | 1.20 | 1.50 |
-| TRENDING | offset  | 0.50 | 0.60 | 0.75 |
+**设计注记（round47 后）**：
+- trigger 与 offset 现在在 avg < 0.35 以下均有响应（不对称缺口从 0.10 缩至 0.05）
+- round48 可考虑将 offset 阈值进一步升至 0.40 以完全对齐（更激进，留待实盘数据验证）
 
-TRENDING lo 现在精确等于对应 RANGING base，形成清晰的层级结构。
-
-**当前行为影响**：无变化（实际值 trigger≥1.10, offset≥0.55 均高于新lo）。
-**前向保护效果**：若 `_TRENDING_TRAIL_BASE_TRIGGER` 未来降至 1.10，
-avg>1.0 时: max(1.10-0.10, 1.05)=1.05（旧版会到 1.00，新版 floor 在 1.05）。
+**deque maxlen 分析（round47 顺带确认）**：
+- `_tp_profits_ranging/trending` 各 maxlen=20，经分析足够
+- RANGING 半衰期 900s（15min），1h 外数据权重 < 6%，实际有效样本仅最近 ~15-30 分钟
+- 增大至 200 无统计收益，不改动（避免不必要代码变更）
 
 ---
 
 ## 历史完成
+
+### 第四十六轮（2026-04-26）
+- [x] grid_pro.py: TRENDING trail bounds下界对齐RANGING base（trigger lo 1.00→1.05，offset lo 0.45→0.50）
 
 ### 第四十五轮（2026-04-26）
 - [x] grid_pro.py: trail基准参数提取为命名类常量 + RANGING base_trigger 1.00→1.05
@@ -72,35 +71,33 @@ avg>1.0 时: max(1.10-0.10, 1.05)=1.05（旧版会到 1.00，新版 floor 在 1.
 
 ## 待解决问题（按优先级）
 
-- [ ] P3: round47：若有实盘日志，分析 `adaptive trigger` 日志中 avg 分布
-  - 重点：avg>1.0 层触发了多少次 vs 总trail次数
-  - 若 avg>1.0 从未触发（avg 都 < 0.80）：trail 基本都是 base 触发，不需要 -0.10 层
-  - 若无日志：评估 `_adaptive_trail_offset` 第二低利润层阈值 0.30→0.35（对齐 trigger 的 0.40→更近）
+- [ ] P3: round48：评估 `_ewma_profit_avg` 启用门槛 `len(bucket) < 5` 是否可降至 3
+  - 成交稀少时（如 TRENDING 每小时 1-2 笔），5 次门槛可能导致自适应长时间无法激活
+  - 若降至 3：EWMA 在更少样本下激活，噪声稍增但覆盖面扩大
+  - 权衡：3 vs 5，TRENDING 场景更可能受益（成交稀疏）
 
-- [ ] P3: round48：EWMA bucket 容量上限（deque maxlen）是否合理？
-  - 当前可能无限增长，极长运行后旧数据权重趋 0 但仍占内存
-  - 若确认无 maxlen，设置 maxlen=200（~5-10 天数据）
+- [ ] P3: round49：完整 trigger/offset 对称性终审
+  - 目标：offset 第二层 0.35 → 0.40（与 trigger 第二层 0.40 完全对齐）
+  - 条件：若 round47 效果无负面反馈，可继续升级
 
 - [ ] P3: 动态止盈：根据波动率进一步调整每格利润（现有 ATR ratio 联动，是否需进一步增强）
 
 ## 下次优先行动
 
-1. **round47**：检查 `_tp_profits_ranging` / `_tp_profits_trending` 的 deque maxlen
-   - `grep -n 'deque\|maxlen\|_tp_profits' quant/strategy/grid_pro.py`
-   - 若无 maxlen：加 maxlen=200 防内存泄漏
-   - 若已有：确认大小合理（>100 for RANGING, 可较小 for TRENDING）
+1. **round48**：检查 `_ewma_profit_avg` 中 `len(bucket) < 5` 门槛
+   - `grep -n 'len(bucket)\|< 5\|< 3' quant/strategy/grid_pro.py`
+   - 若为 5：评估是否改为 3（TRENDING 成交稀疏场景受益）
+   - 若已为 3：确认无需改动，记录
 
-2. **观察**：`_RANGING_TRAIL_BASE_TRIGGER=1.05` 后 neutral 区 trail 总触发次数变化
+2. **观察**：`_adaptive_trail_offset` 第二层 0.30→0.35 对 avg∈[0.30,0.35) 的实际触发次数
 
 ## 系统评估
 - **策略有效性**：9/10
-  - 46轮迭代；全P0/P1已解决；trail 参数结构化为类常量+bounds 层级清晰
-  - TRENDING lo 现精确对齐 RANGING base，建立设计不变式
-  - trigger四层: [1.25] → [1.15] → [1.05 neutral] → [1.00] → [0.95]（RANGING）
-  - offset四层:  [0.56] → [0.53] → [0.50 neutral] → [0.47] → [0.45]（RANGING）
+  - 47轮迭代；全P0/P1已解决；trigger+offset 联动逻辑进一步对称化
+  - 当前不对称缺口：[0.35, 0.40) 范围 trigger 仍放宽但 offset 不响应（缩小至 0.05 间距）
+  - 完整对称方案（0.40 对齐）可作 round49 选项
 - **当前主要风险**：
   1. 外部API网络受限（沙盒，无实时市场监控）
-  2. 实盘日志无法访问（avg 实际分布未知）
-  3. 若实盘中 avg 长期 < 0.25，trail 基本处于最放松状态（trigger 1.25），
-     TP 可能在自然成交前就因极端行情触发 trail 后也需要很大超冲
-- **累计运行轮次**：46
+  2. 实盘日志无法访问（avg 实际分布未知，无法验证哪个层最常触发）
+  3. 连续细化参数但缺乏实盘反馈，存在过拟合风险（虽然每次改动都有逻辑依据）
+- **累计运行轮次**：47

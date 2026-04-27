@@ -1,19 +1,19 @@
 {
-  "ran_at": "2026-04-26 04:00 UTC",
+  "ran_at": "2026-04-27 05:00 UTC",
   "eth_price": "N/A (沙盒网络受限)",
   "eth_24h_change_pct": "N/A",
   "fear_greed_index": "N/A (API不可达)",
   "funding_rate": "N/A",
-  "market_summary": "沙盒环境无法访问外部API，无实时市场数据。基于45轮历史迭代状态评估：系统已完成所有P0/P1修复，trail参数结构化完毕，本轮专注P3设计不变式强化。",
-  "decision": "round46：TRENDING trail bounds下界提升，trigger lo 1.00→1.05，offset lo 0.45→0.50，建立'TRENDING trail永不比RANGING基线更激进'设计不变式。",
+  "market_summary": "沙盒环境，外部API全部不可达。无法获取实时市场数据。基于代码分析执行策略结构改进。系统P0/P1问题均已在前46轮解决，本轮执行P3细化优化。",
+  "decision": "round47：_adaptive_trail_offset第二低利润层阈值0.30→0.35，缩小与trigger第二层(0.40)的不对称间距，使trigger/offset在avg∈[0.30,0.35)时联动一致。",
   "param_changes": [],
   "code_changes": [
     {
       "file": "quant/strategy/grid_pro.py",
-      "summary": "_adaptive_trail_trigger TRENDING lo 1.00→1.05；_adaptive_trail_offset TRENDING lo 0.45→0.50；TRENDING trail参数下界与RANGING base对齐，确立设计不变式（round46）"
+      "summary": "_adaptive_trail_offset: 第二低利润层阈值 avg<0.30 → avg<0.35（+0.03 offset放宽区间扩大），减小与trigger第二层0.40的不对称缺口，avg∈[0.30,0.35)时offset也同步放宽+0.03"
     }
   ],
-  "risk_notes": "沙盒无实盘数据，avg>1.0触发频率未验证；TRENDING lo提升不影响当前行为（实际最低1.10/0.55均高于新lo），为未来参数调整提供安全floor。",
-  "next_focus": "round47：若获得实盘日志，分析adaptive trigger日志中avg分布；观察neutral区(0.40~0.80) trail触发次数变化；评估trigger 1.05后是否需进一步调至1.08。",
-  "round_number": "46"
+  "risk_notes": "外部API网络受限导致无法实时监控市场；trail参数均已精细调整，主要风险是理论优化缺乏实盘数据验证。maxlen=20经分析已足够（EWMA时间衰减使>1h数据权重<6%）。",
+  "next_focus": "round48：评估_ewma_profit_avg启用门槛len(bucket)<5是否可降至3（成交稀少时更早激活自适应）；或完整trigger/offset对称性表终审（所有层级对齐验证）。",
+  "round_number": 47
 }
