@@ -83,6 +83,7 @@ class RegimeDetector:
     _MACRO_UP_STRONG  = +0.0015   # 强上涨：价格高于5分钟均线 0.15%
     _MACRO_UP_WEAK    = +0.0003   # 弱上涨：轻微偏多
     _MACRO_DOWN_STOP  = -0.0020   # 下跌警戒：动量/回撤受限
+    _MACRO_TICK_UP_MIN = -0.0010  # tick分类中 TRENDING_UP 的最低宏观偏差门槛（介于DOWN_STOP与UP_WEAK之间）
     _MACRO_DOWN_KILL  = -0.0030   # 下跌全停：所有多头禁止
 
     # 趋势强度（trend_strength = (ema_f - ema_s) / ema_s）
@@ -212,7 +213,7 @@ class RegimeDetector:
 
         up_frac = up_ticks / total
 
-        if up_frac >= self._TREND_TICK_FRAC and macro_bias > -0.001:
+        if up_frac >= self._TREND_TICK_FRAC and macro_bias > self._MACRO_TICK_UP_MIN:
             return Regime.TRENDING_UP
         if up_frac <= (1 - self._TREND_TICK_FRAC):
             return Regime.TRENDING_DOWN
