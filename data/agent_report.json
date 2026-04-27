@@ -1,19 +1,19 @@
 {
-  "ran_at": "2026-04-27 07:00 UTC",
-  "eth_price": "N/A (沙盒网络受限)",
+  "ran_at": "2026-04-27 08:00 UTC",
+  "eth_price": "N/A (API不可达)",
   "eth_24h_change_pct": "N/A",
-  "fear_greed_index": "N/A (API不可达)",
+  "fear_greed_index": "N/A",
   "funding_rate": "N/A",
-  "market_summary": "沙盒环境无法访问外部API，无实时市场数据。系统参数与代码逻辑状态良好，P0/P1全部已解决，本轮执行预定P3对称性收尾工作。",
-  "decision": "round49：_adaptive_trail_offset 第二层阈值 0.35→0.40，与 trigger 第二层完全对齐，彻底消除 [0.35,0.40) 区间的 trigger/offset 不对称缺口。",
+  "market_summary": "外部API沙盒环境下无法访问，market数据不可用。系统参数正常：GRID_DAILY_TARGET=999，GRID_DRAWDOWN=2.0，BOT_MAX_SESSION=24。",
+  "decision": "round50：激活regime.py中两个从未使用的死代码常量 _MACRO_UP_STRONG(+0.0015) 和 _MACRO_UP_WEAK(+0.0003)，将TRENDING_UP触发阈值从 macro_bias>=-0.002 收紧为 macro_bias>=+0.0003，消除偏空区间[-0.002,+0.003)的误判TRENDING_UP。",
   "param_changes": [],
   "code_changes": [
     {
-      "file": "quant/strategy/grid_pro.py",
-      "summary": "_adaptive_trail_offset 第二低利润层 elif avg < 0.35 → elif avg < 0.40，trigger/offset 第二层联动完全对齐（round49），同步更新 docstring 中的阈值描述"
+      "file": "quant/strategy/regime.py",
+      "summary": "TRENDING_UP判断阈值：_MACRO_DOWN_STOP(-0.002) → _MACRO_UP_STRONG/WEAK(+0.0015/+0.0003)，激活两个定义后从未使用的类常量，要求价格真正高于宏观均线才声明上升趋势"
     }
   ],
-  "risk_notes": "沙盒环境无实时市场监控；连续49轮细化参数存在过拟合风险（每次均有逻辑依据，可控）；trigger/offset 对称性修复系列至此全部完成，进入新优化维度探索阶段。",
-  "next_focus": "round50：综合评估49轮迭代成果；考虑引入新的优化维度（动态格宽ATR联动增强、Regime切换滞回环参数审计）。",
-  "round_number": 49
+  "risk_notes": "修改使TRENDING_UP门槛更严格（macro_bias从>=-0.002收紧为>=+0.0003），在中性/轻微偏空时会降级为RANGING。RANGING也允许入场（meanrev通道），仅改变入场模式（更深的买点+更小的TP），整体风险可控，影响面窄。",
+  "next_focus": "round51：观察新TRENDING_UP阈值的实际影响；若无实盘日志可审计，可考虑：(A) 对称优化TRENDING_DOWN阈值（短策略的_MACRO_DOWN_WEAK），或(B) _classify_by_ticks的macro_bias>-0.001硬编码改为引用_MACRO_UP_WEAK常量",
+  "round_number": 50
 }

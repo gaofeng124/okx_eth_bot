@@ -160,11 +160,15 @@ class RegimeDetector:
         elif macro_bias <= self._MACRO_DOWN_KILL:
             # 价格低于5分钟均线 0.3%+ → 下跌全停
             candidate = Regime.TRENDING_DOWN
-        elif macro_bias >= self._MACRO_DOWN_STOP and ts >= self._TS_STRONG_UP:
-            # 宏观偏多 + 快线明显领先慢线 → 强上升趋势
+        elif macro_bias >= self._MACRO_UP_STRONG and ts >= self._TS_STRONG_UP:
+            # 宏观明显偏多（>+0.15%）+ 快线强力领先 → 强上升趋势
+            # round50: 原 _MACRO_DOWN_STOP(-0.002) 太宽松，价格低于均线0.2%也触发TRENDING_UP
+            # 改用 _MACRO_UP_STRONG(+0.0015)：真正上涨才做上升趋势处理
             candidate = Regime.TRENDING_UP
-        elif macro_bias >= self._MACRO_DOWN_STOP and ts >= self._TS_WEAK_UP:
-            # 宏观中性/偏多 + 弱上升趋势
+        elif macro_bias >= self._MACRO_UP_WEAK and ts >= self._TS_WEAK_UP:
+            # 宏观轻微偏多（>+0.03%）+ 快线领先 → 弱上升趋势
+            # round50: 原 _MACRO_DOWN_STOP(-0.002)→_MACRO_UP_WEAK(+0.0003)
+            # 消除 [-0.002, +0.0003) 偏空区间的误判 TRENDING_UP
             candidate = Regime.TRENDING_UP
         elif macro_bias < self._MACRO_DOWN_STOP and macro_bias > self._MACRO_DOWN_KILL:
             # 宏观偏空（-0.003 ~ -0.002）→ 下跌警戒，停止交易
