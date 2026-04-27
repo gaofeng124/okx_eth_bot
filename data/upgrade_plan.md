@@ -1,50 +1,52 @@
 # ETH量化系统升级计划
 
-## 本次（2026-04-27 第四十八轮）完成
+## 本次（2026-04-27 第四十九轮）完成
 
-### grid_pro.py：_ewma_profit_avg 最小样本门槛改为 regime-specific（round48）
+### grid_pro.py：_adaptive_trail_offset 第二层阈值 0.35→0.40，trigger/offset 对称性终审完成（round49）
 
 **问题**：
-- 旧逻辑：`if len(bucket) < 5: return None`（全局统一门槛）
-- TRENDING 半衰期 2700s，成交稀疏（实盘 1h 内仅 1-3 笔），5 次门槛可能需要数小时才能积累
-- 结果：TRENDING 场景 EWMA 自适应长时间无法激活，退化为 base 参数，失去动态调整能力
-- RANGING 半衰期 900s，成交频繁（1h 内可积累 10+ 笔），5 次门槛合理，无需降低
+- trigger 第二层：`avg < 0.40` → trigger +0.10（放宽触发门槛）
+- offset 第二层：`avg < 0.35` → offset +0.03（放宽落点步长）
+- 不对称缺口：avg 在 [0.35, 0.40) 时，trigger 已放宽 +0.10，但 offset 完全不响应
+- 导致：trail 更晚触发（trigger已放宽）但 TP 落点未同步调整，trail 触发后 TP 仍偏近，容易被小幅回撤提前止盈
 
-**修复（round48）**：
+**修复（round49）**：
 ```
-新增命名常量：
-  _EWMA_MIN_SAMPLES_RANGING  = 5  （不变）
-  _EWMA_MIN_SAMPLES_TRENDING = 3  （5 → 3）
+_adaptive_trail_offset:
+  旧：elif avg < 0.35:  adapted = min(base_offset + 0.03, hi)
+  新：elif avg < 0.40:  adapted = min(base_offset + 0.03, hi)
+```
 
-_ewma_profit_avg 检查逻辑：
-  旧：if len(bucket) < 5:
-  新：min_samples = RANGING→5 / TRENDING→3
-      if len(bucket) < min_samples:
-```
+**完整 trigger/offset 对称结构（最终态）**：
+
+| avg 范围 | trigger 调整 | offset 调整 | 对称性 |
+|---------|-------------|------------|--------|
+| < 0.25  | +0.20       | +0.06      | ✓ 完整 |
+| [0.25, 0.40) | +0.10 | +0.03     | ✓ 完整（round49修复[0.35,0.40)缺口）|
+| [0.40, 0.80] | 0       | 0         | ✓ 中性区间 |
+| (0.80, 1.00] | -0.05  | -0.03     | ✓ 完整 |
+| > 1.00  | -0.10       | -0.05      | ✓ 完整 |
 
 **效果预期**：
-- TRENDING 场景：仅需 3 笔成交即可激活自适应止盈，大幅缩短冷启动期（从"可能数小时"到"约 1-2h"）
-- RANGING 场景：保持 5 次门槛，噪声控制不变
-- 风险：TRENDING 3 个样本噪声稍增，但 EWMA 时间衰减加权 + TRENDING half_life=2700s 平滑效果足够对冲
-
-**修复前后激活时间对比（TRENDING 场景，假设每小时 2 笔成交）**：
-| 门槛 | 激活所需时间 |
-|------|------------|
-| < 5  | ~2.5h（冷启动期极长）|
-| < 3  | ~1.5h（缩短约 1h）  |
+- avg 在 [0.35, 0.40) 时 offset 同步放宽 +0.03，trail 触发更迟但 TP 落点也更远，避免"迟触发+近落点"双重不利组合
+- trigger/offset 全区间完全对称联动，逻辑闭环完成
+- 风险：极小，仅一个边界值修改，逻辑影响面窄且方向正确
 
 ---
 
 ## 历史完成
 
+### 第四十八轮（2026-04-27）
+- [x] grid_pro.py: _ewma_profit_avg 最小样本门槛改为 regime-specific（RANGING=5保持，TRENDING=5→3）
+
 ### 第四十七轮（2026-04-27）
-- [x] grid_pro.py: _adaptive_trail_offset 第二低利润层阈值 0.30 → 0.35（缩小 trigger/offset 不对称缺口）
+- [x] grid_pro.py: _adaptive_trail_offset 第二低利润层阈值 0.30→0.35
 
 ### 第四十六轮（2026-04-26）
-- [x] grid_pro.py: TRENDING trail bounds下界对齐RANGING base（trigger lo 1.00→1.05，offset lo 0.45→0.50）
+- [x] grid_pro.py: TRENDING trail bounds 下界对齐 RANGING base（trigger lo 1.00→1.05，offset lo 0.45→0.50）
 
 ### 第四十五轮（2026-04-26）
-- [x] grid_pro.py: trail基准参数提取为命名类常量 + RANGING base_trigger 1.00→1.05
+- [x] grid_pro.py: trail 基准参数提取为命名类常量 + RANGING base_trigger 1.00→1.05
 
 ### 第四十三/四十四轮（2026-04-26）
 - [x] grid_pro.py: _adaptive_trail_trigger 第三层（avg>1.00→trigger-0.10）
@@ -57,7 +59,7 @@ _ewma_profit_avg 检查逻辑：
 - [x] grid_pro.py: _ewma_profit_avg Regime-specific EWMA 半衰期（RANGING=900s/TRENDING=2700s）
 
 ### 第四十轮（2026-04-25）
-- [x] grid_pro.py: _update_tp ATR ratio 下界收紧 0.8 → 0.85
+- [x] grid_pro.py: _update_tp ATR ratio 下界收紧 0.8→0.85
 
 ### 第三十五~三十九轮（2026-04-24~25）
 - [x] grid_pro.py: 多轮 trail 自适应层完善、1h方向gate滞回环
@@ -69,28 +71,27 @@ _ewma_profit_avg 检查逻辑：
 
 ## 待解决问题（按优先级）
 
-- [ ] P3: round49：完整 trigger/offset 对称性终审
-  - 目标：offset 第二层 0.35 → 0.40（与 trigger 第二层 0.40 完全对齐）
-  - 当前状态：[0.35, 0.40) 区间 trigger 放宽 +0.10 但 offset 仍不响应（剩余 0.05 缺口）
-  - 条件：若 round47/48 效果无负面反馈，可继续升级
-  - 风险评估：极小（单点参数对齐，逻辑清晰）
-
-- [ ] P3: 动态止盈：根据波动率进一步调整每格利润（现有 ATR ratio 联动是否需进一步增强）
+- [ ] P3: round50：进入新优化维度探索
+  - 候选方向A：动态格宽 ATR 联动增强（当前 ATR mult 固定 1.2，可考虑按 Regime 动态调整）
+  - 候选方向B：Regime 切换滞回环参数审计（当前滞回环阈值是否最优）
+  - 候选方向C：成交统计完整性检查（analysis.jsonl fill 事件写入验证）
+  - 先进行代码审计，选取影响最大的方向执行
 
 ## 下次优先行动
 
-1. **round49**：完整 trigger/offset 对称性终审
-   - `grep -n '_adaptive_trail_offset\|avg < 0.35\|avg < 0.40' quant/strategy/grid_pro.py`
-   - 若第二层 offset 阈值为 0.35：升至 0.40（与 trigger 第二层完全对齐）
-   - 预期：消除剩余 [0.35, 0.40) 不对称缺口，trail trigger/offset 完全联动
+**round50：系统性审计，选择新优化维度**
+1. `grep -n 'ATR_MULT\|_atr_mult\|REGIME\|regime_change\|hysteresis' quant/strategy/grid_pro.py | head -30`
+2. 评估动态ATR倍数（RANGING vs TRENDING是否应有差异化格宽）
+3. 或审计Regime切换条件的滞回环阈值是否合理
 
 ## 系统评估
 - **策略有效性**：9/10
-  - 48轮迭代；全P0/P1已解决；EWMA 自适应改为 regime-specific，TRENDING 覆盖面扩大
-  - trigger/offset 不对称：仅剩 [0.35, 0.40) 一个小缺口（0.05 间距），round49 可收尾
-  - 代码逻辑完整性持续提升，常量命名规范化
+  - 49轮迭代；全P0/P1已解决
+  - trigger/offset 对称性修复系列全部完成（round38~49，历经12轮细化）
+  - EWMA 自适应系统完整（regime-specific半衰期+最小样本+总权重门槛+全层对称联动）
+  - 代码逻辑完整性达到阶段性里程碑
 - **当前主要风险**：
   1. 外部API网络受限（沙盒，无实时市场监控）
-  2. 实盘日志无法访问（无法验证 avg 实际分布，哪个层触发最频繁未知）
-  3. 连续细化参数缺乏实盘反馈，存在过拟合风险（每次改动均有逻辑依据，风险可控）
-- **累计运行轮次**：48
+  2. 实盘日志无法访问（无法验证实际avg分布与触发频率）
+  3. 连续细化参数缺乏实盘反馈，存在过拟合风险（每次均有逻辑依据，风险可控）
+- **累计运行轮次**：49
