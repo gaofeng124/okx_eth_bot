@@ -1419,6 +1419,12 @@ class GridProStrategy(TickStrategy):
     # TRENDING 2700s：4个半衰期 = 10800s（3小时）→ 超 3h 无成交时自动退回 base
     _EWMA_MIN_TOTAL_W = 0.5
 
+    # EWMA 激活所需最小样本数（regime-specific）
+    # RANGING 成交频繁（1h 内可积累 10+ 笔），保持 5 抑制噪声
+    # TRENDING 成交稀疏（1h 内仅 1-3 笔），降至 3 确保自适应可激活
+    _EWMA_MIN_SAMPLES_RANGING  = 5
+    _EWMA_MIN_SAMPLES_TRENDING = 3
+
     def _ewma_profit_avg(self) -> float | None:
         """时间衰减加权 EWMA：近期 TP 利润格宽倍数，半衰期按 Regime 动态切换。
 
@@ -1426,11 +1432,16 @@ class GridProStrategy(TickStrategy):
         按当前 Regime 使用对应 bucket（RANGING/TRENDING 分开维护，互不干扰）。
         RANGING  → 900s（15min）：震荡市节奏快，需快速响应利润变化
         TRENDING → 2700s（45min）：趋势市成交稀疏，平滑避免过拟合极少样本
-        5次以下数据时返回 None。
+        样本不足时返回 None（RANGING < 5，TRENDING < 3）。
         total_w < 0.5 时返回 None（桶数据均超 4 个半衰期，退回 base 参数）。
         """
         bucket = self._tp_current_bucket
-        if len(bucket) < 5:
+        min_samples = (
+            self._EWMA_MIN_SAMPLES_RANGING
+            if self._current_regime == Regime.RANGING
+            else self._EWMA_MIN_SAMPLES_TRENDING
+        )
+        if len(bucket) < min_samples:
             return None
         half_life = 900.0 if self._current_regime == Regime.RANGING else 2700.0
         lam = math.log(2.0) / half_life

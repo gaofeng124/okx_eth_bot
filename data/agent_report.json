@@ -1,19 +1,19 @@
 {
-  "ran_at": "2026-04-27 05:00 UTC",
-  "eth_price": "N/A (沙盒网络受限)",
+  "ran_at": "2026-04-27 06:00 UTC",
+  "eth_price": "N/A (网络受限)",
   "eth_24h_change_pct": "N/A",
   "fear_greed_index": "N/A (API不可达)",
   "funding_rate": "N/A",
-  "market_summary": "沙盒环境，外部API全部不可达。无法获取实时市场数据。基于代码分析执行策略结构改进。系统P0/P1问题均已在前46轮解决，本轮执行P3细化优化。",
-  "decision": "round47：_adaptive_trail_offset第二低利润层阈值0.30→0.35，缩小与trigger第二层(0.40)的不对称间距，使trigger/offset在avg∈[0.30,0.35)时联动一致。",
+  "market_summary": "沙盒环境无外部API访问权限，市场数据不可用。系统处于代码优化阶段，本轮聚焦TRENDING场景EWMA激活门槛改进。",
+  "decision": "round48：_ewma_profit_avg 激活门槛改为 regime-specific（RANGING保持5，TRENDING降至3），解决TRENDING场景成交稀疏时自适应长时间无法激活的问题。",
   "param_changes": [],
   "code_changes": [
     {
       "file": "quant/strategy/grid_pro.py",
-      "summary": "_adaptive_trail_offset: 第二低利润层阈值 avg<0.30 → avg<0.35（+0.03 offset放宽区间扩大），减小与trigger第二层0.40的不对称缺口，avg∈[0.30,0.35)时offset也同步放宽+0.03"
+      "summary": "新增 _EWMA_MIN_SAMPLES_RANGING=5/_EWMA_MIN_SAMPLES_TRENDING=3 常量，_ewma_profit_avg 最小样本检查改为 regime-specific：RANGING≥5保持不变，TRENDING≥3降低门槛使稀疏成交场景也能激活自适应止盈。"
     }
   ],
-  "risk_notes": "外部API网络受限导致无法实时监控市场；trail参数均已精细调整，主要风险是理论优化缺乏实盘数据验证。maxlen=20经分析已足够（EWMA时间衰减使>1h数据权重<6%）。",
-  "next_focus": "round48：评估_ewma_profit_avg启用门槛len(bucket)<5是否可降至3（成交稀少时更早激活自适应）；或完整trigger/offset对称性表终审（所有层级对齐验证）。",
-  "round_number": 47
+  "risk_notes": "TRENDING模式最小样本从5降至3，可能在极少样本时增加噪声；但TRENDING bucket有maxlen=20且EWMA时间衰减加权，3个近期样本信号质量仍优于无自适应退化到base参数。",
+  "next_focus": "round49：评估 _adaptive_trail_offset 第二层阈值 0.35→0.40（与trigger第二层0.40完全对齐），消除剩余[0.35,0.40)不对称缺口。",
+  "round_number": 48
 }

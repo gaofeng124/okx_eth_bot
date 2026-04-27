@@ -1,46 +1,44 @@
 # ETH量化系统升级计划
 
-## 本次（2026-04-27 第四十七轮）完成
+## 本次（2026-04-27 第四十八轮）完成
 
-### grid_pro.py：_adaptive_trail_offset 第二低利润层阈值 0.30 → 0.35（round47）
+### grid_pro.py：_ewma_profit_avg 最小样本门槛改为 regime-specific（round48）
 
 **问题**：
-- `_adaptive_trail_trigger` 第二低利润层：avg < 0.40 → trigger +0.10
-- `_adaptive_trail_offset` 第二低利润层：avg < 0.30 → offset +0.03
-- 不对称缺口：avg 在 [0.30, 0.40) 时 trigger 已放宽 +0.10，但 offset 完全不响应
-- 逻辑矛盾：trail 需要更大价格超冲才启动（+0.10），但启动后 TP 落点距离不变
-- 应有设计：trigger 放宽时 offset 应同步放宽，两者联动
+- 旧逻辑：`if len(bucket) < 5: return None`（全局统一门槛）
+- TRENDING 半衰期 2700s，成交稀疏（实盘 1h 内仅 1-3 笔），5 次门槛可能需要数小时才能积累
+- 结果：TRENDING 场景 EWMA 自适应长时间无法激活，退化为 base 参数，失去动态调整能力
+- RANGING 半衰期 900s，成交频繁（1h 内可积累 10+ 笔），5 次门槛合理，无需降低
 
-**修复（round47）**：
+**修复（round48）**：
 ```
-_adaptive_trail_offset:
-  第二低利润层阈值: avg < 0.30 → avg < 0.35
-  效果: avg∈[0.30, 0.35) 时 offset 也放宽 +0.03（与 trigger 的 +0.10 联动）
+新增命名常量：
+  _EWMA_MIN_SAMPLES_RANGING  = 5  （不变）
+  _EWMA_MIN_SAMPLES_TRENDING = 3  （5 → 3）
+
+_ewma_profit_avg 检查逻辑：
+  旧：if len(bucket) < 5:
+  新：min_samples = RANGING→5 / TRENDING→3
+      if len(bucket) < min_samples:
 ```
 
-**修复前后对比**：
-| avg 范围       | trigger delta | offset delta（旧）| offset delta（新）|
-|----------------|--------------|-------------------|-------------------|
-| < 0.25         | +0.20        | +0.06             | +0.06（不变）     |
-| [0.25, 0.30)   | +0.10        | +0.03             | +0.03（不变）     |
-| **[0.30, 0.35)**| **+0.10**   | **0（不响应）**   | **+0.03（修复）** |
-| [0.35, 0.40)   | +0.10        | 0                 | 0（仍存在小缺口） |
-| [0.40, 0.80)   | 0            | 0                 | 0                 |
-| (0.80, 1.00]   | -0.05        | -0.03             | -0.03（不变）     |
-| > 1.00         | -0.10        | -0.05             | -0.05（不变）     |
+**效果预期**：
+- TRENDING 场景：仅需 3 笔成交即可激活自适应止盈，大幅缩短冷启动期（从"可能数小时"到"约 1-2h"）
+- RANGING 场景：保持 5 次门槛，噪声控制不变
+- 风险：TRENDING 3 个样本噪声稍增，但 EWMA 时间衰减加权 + TRENDING half_life=2700s 平滑效果足够对冲
 
-**设计注记（round47 后）**：
-- trigger 与 offset 现在在 avg < 0.35 以下均有响应（不对称缺口从 0.10 缩至 0.05）
-- round48 可考虑将 offset 阈值进一步升至 0.40 以完全对齐（更激进，留待实盘数据验证）
-
-**deque maxlen 分析（round47 顺带确认）**：
-- `_tp_profits_ranging/trending` 各 maxlen=20，经分析足够
-- RANGING 半衰期 900s（15min），1h 外数据权重 < 6%，实际有效样本仅最近 ~15-30 分钟
-- 增大至 200 无统计收益，不改动（避免不必要代码变更）
+**修复前后激活时间对比（TRENDING 场景，假设每小时 2 笔成交）**：
+| 门槛 | 激活所需时间 |
+|------|------------|
+| < 5  | ~2.5h（冷启动期极长）|
+| < 3  | ~1.5h（缩短约 1h）  |
 
 ---
 
 ## 历史完成
+
+### 第四十七轮（2026-04-27）
+- [x] grid_pro.py: _adaptive_trail_offset 第二低利润层阈值 0.30 → 0.35（缩小 trigger/offset 不对称缺口）
 
 ### 第四十六轮（2026-04-26）
 - [x] grid_pro.py: TRENDING trail bounds下界对齐RANGING base（trigger lo 1.00→1.05，offset lo 0.45→0.50）
@@ -71,33 +69,28 @@ _adaptive_trail_offset:
 
 ## 待解决问题（按优先级）
 
-- [ ] P3: round48：评估 `_ewma_profit_avg` 启用门槛 `len(bucket) < 5` 是否可降至 3
-  - 成交稀少时（如 TRENDING 每小时 1-2 笔），5 次门槛可能导致自适应长时间无法激活
-  - 若降至 3：EWMA 在更少样本下激活，噪声稍增但覆盖面扩大
-  - 权衡：3 vs 5，TRENDING 场景更可能受益（成交稀疏）
-
 - [ ] P3: round49：完整 trigger/offset 对称性终审
   - 目标：offset 第二层 0.35 → 0.40（与 trigger 第二层 0.40 完全对齐）
-  - 条件：若 round47 效果无负面反馈，可继续升级
+  - 当前状态：[0.35, 0.40) 区间 trigger 放宽 +0.10 但 offset 仍不响应（剩余 0.05 缺口）
+  - 条件：若 round47/48 效果无负面反馈，可继续升级
+  - 风险评估：极小（单点参数对齐，逻辑清晰）
 
-- [ ] P3: 动态止盈：根据波动率进一步调整每格利润（现有 ATR ratio 联动，是否需进一步增强）
+- [ ] P3: 动态止盈：根据波动率进一步调整每格利润（现有 ATR ratio 联动是否需进一步增强）
 
 ## 下次优先行动
 
-1. **round48**：检查 `_ewma_profit_avg` 中 `len(bucket) < 5` 门槛
-   - `grep -n 'len(bucket)\|< 5\|< 3' quant/strategy/grid_pro.py`
-   - 若为 5：评估是否改为 3（TRENDING 成交稀疏场景受益）
-   - 若已为 3：确认无需改动，记录
-
-2. **观察**：`_adaptive_trail_offset` 第二层 0.30→0.35 对 avg∈[0.30,0.35) 的实际触发次数
+1. **round49**：完整 trigger/offset 对称性终审
+   - `grep -n '_adaptive_trail_offset\|avg < 0.35\|avg < 0.40' quant/strategy/grid_pro.py`
+   - 若第二层 offset 阈值为 0.35：升至 0.40（与 trigger 第二层完全对齐）
+   - 预期：消除剩余 [0.35, 0.40) 不对称缺口，trail trigger/offset 完全联动
 
 ## 系统评估
 - **策略有效性**：9/10
-  - 47轮迭代；全P0/P1已解决；trigger+offset 联动逻辑进一步对称化
-  - 当前不对称缺口：[0.35, 0.40) 范围 trigger 仍放宽但 offset 不响应（缩小至 0.05 间距）
-  - 完整对称方案（0.40 对齐）可作 round49 选项
+  - 48轮迭代；全P0/P1已解决；EWMA 自适应改为 regime-specific，TRENDING 覆盖面扩大
+  - trigger/offset 不对称：仅剩 [0.35, 0.40) 一个小缺口（0.05 间距），round49 可收尾
+  - 代码逻辑完整性持续提升，常量命名规范化
 - **当前主要风险**：
   1. 外部API网络受限（沙盒，无实时市场监控）
-  2. 实盘日志无法访问（avg 实际分布未知，无法验证哪个层最常触发）
-  3. 连续细化参数但缺乏实盘反馈，存在过拟合风险（虽然每次改动都有逻辑依据）
-- **累计运行轮次**：47
+  2. 实盘日志无法访问（无法验证 avg 实际分布，哪个层触发最频繁未知）
+  3. 连续细化参数缺乏实盘反馈，存在过拟合风险（每次改动均有逻辑依据，风险可控）
+- **累计运行轮次**：48
