@@ -60,15 +60,6 @@ REGIME_ALLOWED_CHANNELS: dict[Regime, set[str]] = {
     Regime.VOLATILE:       {"pullback"},                # 仅最保守的回撤信号，且要求更强条件
 }
 
-# 每种状态下的仓位系数（1.0 = 标准仓位）
-REGIME_SIZE_FACTOR: dict[Regime, float] = {
-    Regime.WARMUP:         0.0,
-    Regime.TRENDING_UP:    1.0,
-    Regime.RANGING:        0.7,   # MR 胜率不稳定，轻仓
-    Regime.TRENDING_DOWN:  0.0,
-    Regime.VOLATILE:       0.5,   # 高波动缩仓
-}
-
 
 class RegimeDetector:
     """
@@ -128,10 +119,6 @@ class RegimeDetector:
     @property
     def allowed_channels(self) -> set[str]:
         return REGIME_ALLOWED_CHANNELS[self._current]
-
-    @property
-    def size_factor(self) -> float:
-        return REGIME_SIZE_FACTOR[self._current]
 
     def update(self, feat: dict[str, Any], now: float) -> Regime:
         """

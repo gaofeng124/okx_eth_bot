@@ -1,17 +1,19 @@
 {
-  "ran_at": "2026-04-28 07:00 UTC",
-  "eth_price": "N/A (网络受限)",
+  "ran_at": "2026-04-28 08:00 UTC",
+  "eth_price": "N/A (API not accessible in sandbox)",
   "eth_24h_change_pct": "N/A",
-  "fear_greed_index": "N/A (网络受限)",
-  "funding_rate": "N/A (网络受限)",
-  "market_summary": "沙盒环境无法访问外部API，市场数据不可用。基于历史53轮经验，ETH处于震荡行情，regime系统已完整覆盖RANGING/TRENDING_UP/TRENDING_DOWN/VOLATILE四种状态，对称性问题全部修复。",
-  "decision": "第54轮：删除settings.py中全部41行SP_（ScalpPro）死代码，同步清理regime.py注释中过时引用。",
+  "fear_greed_index": "N/A (API not accessible)",
+  "funding_rate": "N/A",
+  "market_summary": "沙盒环境无法访问外部API，市场数据不可用。无实盘analysis.jsonl（无真实交易记录）。系统代码架构审计完成，P0/P1全部正常，LEV5_全量审计证明236个参数无死代码。",
+  "decision": "第55轮：删除regime.py中REGIME_SIZE_FACTOR死代码（dict+property），完成LEV5_全量审计（236个参数全部有效，无死代码）。",
   "param_changes": [],
   "code_changes": [
-    {"file": "quant/settings.py", "summary": "删除D类中全部SP_前缀ScalpPro专属参数（41行），scalp_pro策略已移除，这些参数零调用纯死代码"},
-    {"file": "quant/strategy/regime.py", "summary": "清理_VOL_HIGH注释中残留的SP_VOL_CEIL过时引用"}
+    {
+      "file": "quant/strategy/regime.py",
+      "summary": "删除REGIME_SIZE_FACTOR字典（8行）和RegimeDetector.size_factor属性（3行）——全代码库无任何调用，纯死代码。"
+    }
   ],
-  "risk_notes": "沙盒环境无实盘数据验证；死代码清理本身无运行风险，settings.py SP_参数从未被任何策略文件import或引用",
-  "next_focus": "round55：从analysis.jsonl提取rel_vol字段，统计VOLATILE触发频率，验证_VOL_HIGH=0.0032是否适配ETH实际波动率",
-  "round_number": "54"
+  "risk_notes": "外部API受限（沙盒），无法验证实盘ATR分布和_VOL_HIGH=0.0032阈值适配性。无实盘成交数据，EWMA自适应trail冷启动需5次RANGING成交后生效。",
+  "next_focus": "round56：检查RegimeDetector.allowed_channels属性是否可删（property无外部调用，REGIME_ALLOWED_CHANNELS字典保留供_transition日志使用）",
+  "round_number": 55
 }
