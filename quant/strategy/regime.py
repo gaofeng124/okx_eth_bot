@@ -116,10 +116,6 @@ class RegimeDetector:
     def current(self) -> Regime:
         return self._current
 
-    @property
-    def allowed_channels(self) -> set[str]:
-        return REGIME_ALLOWED_CHANNELS[self._current]
-
     def update(self, feat: dict[str, Any], now: float) -> Regime:
         """
         每个 tick 调用一次，更新内部状态并返回当前 Regime。

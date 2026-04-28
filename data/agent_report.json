@@ -1,19 +1,19 @@
 {
-  "ran_at": "2026-04-28 08:00 UTC",
-  "eth_price": "N/A (API not accessible in sandbox)",
+  "ran_at": "2026-04-28 09:00 UTC",
+  "eth_price": "N/A (API不可达)",
   "eth_24h_change_pct": "N/A",
-  "fear_greed_index": "N/A (API not accessible)",
-  "funding_rate": "N/A",
-  "market_summary": "沙盒环境无法访问外部API，市场数据不可用。无实盘analysis.jsonl（无真实交易记录）。系统代码架构审计完成，P0/P1全部正常，LEV5_全量审计证明236个参数无死代码。",
-  "decision": "第55轮：删除regime.py中REGIME_SIZE_FACTOR死代码（dict+property），完成LEV5_全量审计（236个参数全部有效，无死代码）。",
+  "fear_greed_index": "N/A (API不可达)",
+  "funding_rate": "N/A (API不可达)",
+  "market_summary": "沙盒环境外部API不可达，无法获取实时行情。代码维护轮次，专注死代码清理。",
+  "decision": "第56轮：删除regime.py中allowed_channels死代码property（3行），REGIME_ALLOWED_CHANNELS字典保留（line219直接引用）。",
   "param_changes": [],
   "code_changes": [
     {
       "file": "quant/strategy/regime.py",
-      "summary": "删除REGIME_SIZE_FACTOR字典（8行）和RegimeDetector.size_factor属性（3行）——全代码库无任何调用，纯死代码。"
+      "summary": "删除RegimeDetector.allowed_channels property（@property装饰器+def+return共3行）——无任何外部调用者，为纯死代码"
     }
   ],
-  "risk_notes": "外部API受限（沙盒），无法验证实盘ATR分布和_VOL_HIGH=0.0032阈值适配性。无实盘成交数据，EWMA自适应trail冷启动需5次RANGING成交后生效。",
-  "next_focus": "round56：检查RegimeDetector.allowed_channels属性是否可删（property无外部调用，REGIME_ALLOWED_CHANNELS字典保留供_transition日志使用）",
-  "round_number": 55
+  "risk_notes": "外部API在沙盒中不可达，无实时市场监控；所有优化均未经实盘数据验证。",
+  "next_focus": "round57：审计regime.py line177冗余elif条件（macro_bias > _MACRO_DOWN_KILL恒真），评估是否可以安全简化而不增加未来维护风险。",
+  "round_number": 56
 }
