@@ -96,8 +96,11 @@ class RegimeDetector:
     _VOL_RANGING      = 0.0008    # 极低波动（低于此值 = 可能横盘）
 
     # 方向得分：近 N tick 中涨跌 tick 的比例
-    _TICK_WINDOW      = 12        # 12 tick ≈ 2.4s（WS 200ms/tick）
-    _TREND_TICK_FRAC  = 0.70      # 70% 同向 tick 才算趋势
+    _TICK_WINDOW          = 12        # 12 tick ≈ 2.4s（WS 200ms/tick）
+    _TREND_TICK_FRAC      = 0.70      # 70% 同向 tick 才算趋势
+    _MACRO_TICK_DOWN_MAX  = +0.0010   # tick分类中 TRENDING_DOWN 的最高宏观偏差门槛（对称于 _MACRO_TICK_UP_MIN）
+    # 对称设计：_MACRO_TICK_UP_MIN(-0.001) 防止宏观极空时误判UP；
+    #            _MACRO_TICK_DOWN_MAX(+0.001) 防止宏观轻涨时微观回调误判DOWN
 
     # 状态保持最小时长（秒）：防止状态频繁抖动
     # 日志回顾（2026-04-09）：trending_up→ranging 在 8s 内完成，导致 pullback/momentum
@@ -215,7 +218,7 @@ class RegimeDetector:
 
         if up_frac >= self._TREND_TICK_FRAC and macro_bias > self._MACRO_TICK_UP_MIN:
             return Regime.TRENDING_UP
-        if up_frac <= (1 - self._TREND_TICK_FRAC):
+        if up_frac <= (1 - self._TREND_TICK_FRAC) and macro_bias < self._MACRO_TICK_DOWN_MAX:
             return Regime.TRENDING_DOWN
         return Regime.RANGING
 
