@@ -411,48 +411,6 @@ class D:
     LEV5_VOL_LEV_SCALE_FLOOR = 0.68
     LEV5_FUNDING_BASIS_FR_SCALE = 18000.0
 
-    # ── ScalpPro 专属参数（小步快走策略 v3）─────────────────────────────────
-    # 信号参数
-    SP_Z_PULLBACK = 0.60          # 回撤通道：z < -0.60 才算真正回撤（-0.35 太浅，仍接飞刀）
-    SP_Z_PULLBACK_MAX = 0.90      # 回撤过深（超卖）则跳过，等待回稳
-    SP_Z_MOMENTUM_MIN = 0.0       # 动量通道：Z 下限（价格在快 EMA 上方）
-    SP_Z_MOMENTUM_MAX = 0.45      # 动量通道：Z 上限（过热则跳过）
-    SP_IMB_MOMENTUM = 0.12        # 动量通道：最低买方盘口占比（0.12=明确买压）
-    SP_IMB_MICRO = 0.10           # MR 通道：最低盘口失衡阈值（降低：0.15→0.10，避免MR信号过少）
-    SP_RSI_LONG_MAX = 68.0        # 做多时 RSI 上限（超过则已超买）
-    SP_RSI_SHORT_MIN = 32.0       # 做空时 RSI 下限（低于则已超卖）
-    SP_RSI_MR_LONG = 30.0         # MR 做多：RSI < 此值（WS模式下RSI噪声大，实际由z-score主导）
-    SP_RSI_MR_SHORT = 70.0        # MR 做空：RSI > 此值
-    SP_MAX_SPREAD_BPS = 15.0      # 最大允许点差（超过则不开仓）
-    SP_MIN_EDGE_BPS = 0.02        # 净 edge 下限（软拦截，-7.35bps 以下才真正拦截）
-    SP_ROUNDTRIP_FEE_BPS = 7.0    # 实际手续费：maker 2bps + IOC 5bps = 7bps
-    # 止盈止损（小步快走 v3 版）
-    # 核心原则：TP 必须在 90s stale 窗口内可达。ETH 典型移动 0.3%/2min
-    # SL=0.3% → 5x → 账户 1.5% 损失/笔；TP=0.4% → 5x → 账户 2% 收益/笔
-    # 往返费 7bps，TP 覆盖率 = (TP-fee)/(TP+SL) = (40-7)/(40+30) = 47% → 需胜率 >47%
-    SP_SL_VOL_MULT = 2.5          # SL = rel_vol × 2.5（动态，低波动时收紧）
-    SP_TP_VOL_MULT = 4.0          # TP = rel_vol × 4.0（动态）
-    SP_SL_FLOOR = 0.002           # SL 最低 0.2%（5x杠杆=1% 账户损失上限）
-    SP_SL_CEIL = 0.005            # SL 最高 0.5%（原0.7%；收紧，减少单笔大亏）
-    SP_TP_FLOOR = 0.003           # TP 最低 0.3%（原0.3%；90s内可达）
-    SP_TP_CEIL = 0.008            # TP 最高 0.8%（原1.0%；收紧，提高触发率）
-    SP_RR_MIN = 1.35              # TP/SL 风险回报比下限（至少 1.35:1）
-    # 持仓管理
-    SP_MAX_HOLD_SEC = 180.0       # 最大持仓时间 3 分钟（原4分钟；更紧，小步快走）
-    SP_STALE_SEC = 75.0           # 僵尸持仓：75s 无进展则清仓（原90s；更快出场减少费用损耗）
-    SP_STALE_PNL_PCT = 0.0003     # 僵尸判定 PnL 门槛（0.03%）
-    SP_TRAIL_TRIGGER = 0.0015     # 移动止盈触发：盈利 0.15% 后启动（原0.2%）
-    SP_TRAIL_GIVEBACK = 0.0008    # 从最高点回撤 0.08% 后退出（原0.1%；更紧保护收益）
-    SP_QUICK_EXIT_SEC = 40.0      # 快速亏损判定：持仓 40s 后（原45s；更快发现错误方向）
-    SP_QUICK_EXIT_SL_FRAC = 0.55  # 快速亏损：达到 SL 的 55% 即退出（原60%；更早止损）
-    # 仓位
-    SP_VOL_TARGET = 0.0014        # 目标波动率（ETH 永续典型值）[未使用，预留]
-    SP_VOL_CEIL = 0.0028          # 波动率上限（原0.0030；稍微收紧）[未使用，预留；非regime._VOL_HIGH前置条件]
-    SP_MIN_SIZE_FACTOR = 0.50     # 极端情况下的最小仓位系数
-    SP_CONSEC_LOSS_DECAY = 0.12   # 连续亏损每笔缩仓 12%（原15%；稍放宽避免仓位过小）
-    SP_LEVERAGE = 5.0             # 杠杆倍数
-    SP_TD_MODE = "isolated"       # 逐仓模式
-
     # ── GridPro 专属参数（10x 网格策略）──────────────────────────────────────
     GRID_LEVELS = 4                    # 网格档数（向下放 N 档限价买单）
     GRID_ATR_WINDOW = 60               # ATR 计算窗口（tick 数，60≈12s）
