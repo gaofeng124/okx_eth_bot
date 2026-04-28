@@ -446,8 +446,8 @@ class D:
     SP_QUICK_EXIT_SEC = 40.0      # 快速亏损判定：持仓 40s 后（原45s；更快发现错误方向）
     SP_QUICK_EXIT_SL_FRAC = 0.55  # 快速亏损：达到 SL 的 55% 即退出（原60%；更早止损）
     # 仓位
-    SP_VOL_TARGET = 0.0014        # 目标波动率（ETH 永续典型值）
-    SP_VOL_CEIL = 0.0028          # 波动率上限（原0.0030；稍微收紧）
+    SP_VOL_TARGET = 0.0014        # 目标波动率（ETH 永续典型值）[未使用，预留]
+    SP_VOL_CEIL = 0.0028          # 波动率上限（原0.0030；稍微收紧）[未使用，预留；非regime._VOL_HIGH前置条件]
     SP_MIN_SIZE_FACTOR = 0.50     # 极端情况下的最小仓位系数
     SP_CONSEC_LOSS_DECAY = 0.12   # 连续亏损每笔缩仓 12%（原15%；稍放宽避免仓位过小）
     SP_LEVERAGE = 5.0             # 杠杆倍数

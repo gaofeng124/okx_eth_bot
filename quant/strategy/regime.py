@@ -92,7 +92,7 @@ class RegimeDetector:
     _TS_DOWN          = -0.00030  # 下降趋势
 
     # 相对波动率
-    _VOL_HIGH         = 0.0032    # 极端波动阈值（当前 SP_VOL_CEIL = 0.0028）
+    _VOL_HIGH         = 0.0032    # 极端波动阈值（32bps）：VOLATILE regime 触发点；SP_VOL_CEIL(settings) 是死代码，与此无依赖
     _VOL_RANGING      = 0.0008    # 极低波动（低于此值 = 可能横盘）
 
     # 方向得分：近 N tick 中涨跌 tick 的比例
