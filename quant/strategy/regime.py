@@ -169,7 +169,7 @@ class RegimeDetector:
             candidate = Regime.RANGING
         else:
             # ── 层 3：近期 tick 方向分布 ──
-            candidate = self._classify_by_ticks(macro_bias, trend_up, trend_down)
+            candidate = self._classify_by_ticks(macro_bias)
 
         # ── 状态保持：防止抖动 ──
         if candidate != self._current:
@@ -182,12 +182,7 @@ class RegimeDetector:
 
         return self._current
 
-    def _classify_by_ticks(
-        self,
-        macro_bias: float,
-        trend_up: bool,
-        trend_down: bool,
-    ) -> Regime:
+    def _classify_by_ticks(self, macro_bias: float) -> Regime:
         """用近期 tick 价格序列辅助判断状态。"""
         prices = list(self._tick_prices)
         if len(prices) < self._TICK_WINDOW // 2:

@@ -1,19 +1,19 @@
 {
-  "ran_at": "2026-04-29 01:00 UTC",
-  "eth_price": "N/A (沙盒网络受限)",
+  "ran_at": "2026-04-29 02:00 UTC",
+  "eth_price": "N/A (sandbox network restricted)",
   "eth_24h_change_pct": "N/A",
-  "fear_greed_index": "N/A (沙盒网络受限)",
+  "fear_greed_index": "N/A (API unavailable)",
   "funding_rate": "N/A",
-  "market_summary": "沙盒环境无法访问外部API，市场数据不可用。代码质量优化轮次，专注regime.py逻辑精确性。",
-  "decision": "第58轮：regime.py line160 删除恒真条件 `macro_bias > self._MACRO_DOWN_KILL`，该条件在elif链中由line147保证永远为真",
+  "market_summary": "市场API在沙盒环境中无法访问。系统参数状态良好：GRID_DAILY_TARGET=999(正常)，GRID_DRAWDOWN=2.0(正常)，BOT_MAX_SESSION未触发。本轮专注代码质量审计。",
+  "decision": "第59轮：regime.py _classify_by_ticks 方法删除两个从未使用的参数 trend_up/trend_down，简化签名为 (self, macro_bias: float)",
   "param_changes": [],
   "code_changes": [
     {
       "file": "quant/strategy/regime.py",
-      "summary": "line160: `elif macro_bias < _MACRO_DOWN_STOP and macro_bias > _MACRO_DOWN_KILL` → `elif macro_bias < _MACRO_DOWN_STOP`，删除elif链中的恒真冗余条件，并在注释中明确标注区间来源"
+      "summary": "删除 _classify_by_ticks 的两个死参数 trend_up/trend_down（函数体从未引用），同步更新唯一调用点 line172"
     }
   ],
-  "risk_notes": "外部API网络受限（沙盒），无实时市场监控；实盘日志无法访问，优化未经实盘数据验证",
-  "next_focus": "round59：检查 _classify_by_ticks 方法中的逻辑，验证 _MACRO_TICK_DOWN_MAX 实盘效果评估路径，或审计其他elif链是否有类似冗余条件",
-  "round_number": 58
+  "risk_notes": "GRID_DRAWDOWN_FROM_PEAK_USDT=2.0 仍处于监控范围，低于建议3.0但当前50U本金约4%尚可接受；外部API网络受限导致市场监控数据缺失",
+  "next_focus": "round60：审计 grid_pro.py 中 _open_grid_orders 的订单数量与档位逻辑，确认 GRID_LEVELS 参数与实际挂单数量一致",
+  "round_number": 59
 }
