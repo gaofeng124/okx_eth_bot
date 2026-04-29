@@ -157,8 +157,9 @@ class RegimeDetector:
             # round50: 原 _MACRO_DOWN_STOP(-0.002)→_MACRO_UP_WEAK(+0.0003)
             # 消除 [-0.002, +0.0003) 偏空区间的误判 TRENDING_UP
             candidate = Regime.TRENDING_UP
-        elif macro_bias < self._MACRO_DOWN_STOP and macro_bias > self._MACRO_DOWN_KILL:
-            # 宏观偏空（-0.003 ~ -0.002）→ 下跌警戒，停止交易
+        elif macro_bias < self._MACRO_DOWN_STOP:
+            # 宏观偏空（_MACRO_DOWN_KILL(-0.003) < macro_bias < _MACRO_DOWN_STOP(-0.002)）→ 下跌警戒，停止交易
+            # elif链保证此处 macro_bias > _MACRO_DOWN_KILL（line147已处理≤-0.003情形）
             candidate = Regime.TRENDING_DOWN
         elif trend_down and ts <= self._TS_DOWN:
             # 短期趋势向下 → 下跌

@@ -1,19 +1,19 @@
 {
-  "ran_at": "2026-04-29 00:00 UTC",
-  "eth_price": "N/A (网络受限)",
+  "ran_at": "2026-04-29 01:00 UTC",
+  "eth_price": "N/A (沙盒网络受限)",
   "eth_24h_change_pct": "N/A",
-  "fear_greed_index": "N/A (API不可达)",
-  "funding_rate": "N/A (API不可达)",
-  "market_summary": "沙盒环境网络受限，无法获取实时市场数据。系统已运行56轮迭代，全P0/P1问题已解决，本轮专注降低urlopen阻塞对事件循环的影响。",
-  "decision": "第57轮：1h缓存API调用超时 5s→2s + 指数退避(60s→120s→240s→300s)，减少API故障时事件循环冻结时间",
+  "fear_greed_index": "N/A (沙盒网络受限)",
+  "funding_rate": "N/A",
+  "market_summary": "沙盒环境无法访问外部API，市场数据不可用。代码质量优化轮次，专注regime.py逻辑精确性。",
+  "decision": "第58轮：regime.py line160 删除恒真条件 `macro_bias > self._MACRO_DOWN_KILL`，该条件在elif链中由line147保证永远为真",
   "param_changes": [],
   "code_changes": [
     {
-      "file": "quant/strategy/grid_pro.py",
-      "summary": "新增_price_1h_fail_count计数器；urlopen timeout 5s→2s；失败时指数退避替代固定60s重试；P4守卫timeout 5s→2s"
+      "file": "quant/strategy/regime.py",
+      "summary": "line160: `elif macro_bias < _MACRO_DOWN_STOP and macro_bias > _MACRO_DOWN_KILL` → `elif macro_bias < _MACRO_DOWN_STOP`，删除elif链中的恒真冗余条件，并在注释中明确标注区间来源"
     }
   ],
-  "risk_notes": "网络受限环境下_price_1h_cache永远为0，两个1h-gate（drop/rise）自动跳过（条件检查 > 0）；实盘API正常时fail_count始终为0无影响",
-  "next_focus": "round58：评估regime.py line177 冗余条件（macro_bias > _MACRO_DOWN_KILL在elif链中恒真），是否安全简化",
-  "round_number": 57
+  "risk_notes": "外部API网络受限（沙盒），无实时市场监控；实盘日志无法访问，优化未经实盘数据验证",
+  "next_focus": "round59：检查 _classify_by_ticks 方法中的逻辑，验证 _MACRO_TICK_DOWN_MAX 实盘效果评估路径，或审计其他elif链是否有类似冗余条件",
+  "round_number": 58
 }
