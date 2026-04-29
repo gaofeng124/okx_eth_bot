@@ -412,6 +412,7 @@ class GridProStrategy(TickStrategy):
         # 网格状态
         self._grid_center:  float = 0.0
         self._grid_spacing: float = 0.0
+        self._grid_bias:    float = 1.0   # RANGING=1.0; TRENDING=0.5（补仓/重置用）
         self._grid_active:  bool  = False
         self._active_levels: int  = 0
 
@@ -1252,6 +1253,7 @@ class GridProStrategy(TickStrategy):
 
         self._grid_spacing  = spacing
         self._grid_center   = center
+        self._grid_bias     = bias
         self._active_levels = n_active
         self._grid_active   = True
         placed = 0
@@ -1711,7 +1713,7 @@ class GridProStrategy(TickStrategy):
             dir_sign = self._grid_spacing_sign()
             for s in self._slots:
                 if s.state == _S.EMPTY:
-                    calc_px = self._grid_center * (1.0 + dir_sign * self._grid_spacing * (s.level + 1))
+                    calc_px = self._grid_center * (1.0 + dir_sign * self._grid_spacing * (s.level + 1) * self._grid_bias)
                     crossed = (
                         calc_px <= self._last_bid if self._is_short
                         else calc_px >= self._last_bid
@@ -2794,7 +2796,7 @@ class GridProStrategy(TickStrategy):
                     and self._grid_center > 0
                 ):
                     calc_px = self._grid_center * (
-                        1.0 + dir_sign * self._grid_spacing * (s.level + 1)
+                        1.0 + dir_sign * self._grid_spacing * (s.level + 1) * self._grid_bias
                     )
                     # 计算目标价越叉：
                     #   long  买单 >= bid 即穿越 → post_only 必败，重置
