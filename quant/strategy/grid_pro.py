@@ -495,6 +495,7 @@ class GridProStrategy(TickStrategy):
         self._long_drop_gate: bool  = False  # LONG: 价格跌离1h高点>1%时激活
         self._short_rise_gate: bool = False  # SHORT: 价格涨离1h低点>1%时激活
         self._last_gate_log_ts: float = 0.0  # gate日志节流（60s一次，防每tick刷屏）
+        self._price_1h_fail_count: int = 0  # 连续失败次数（指数退避用）
         # 【2026-04-22 17:30 盈亏比修复 改动 5】连亏冷静期
         # 主人："加注赔钱金额大" → 连 2 亏不加仓，30min 冷静
         self._loss_streak_until: float = 0.0  # 冷静期结束时间
@@ -1953,7 +1954,7 @@ class GridProStrategy(TickStrategy):
             import urllib.request as _ur, json as _json
             with _ur.urlopen(
                 "https://www.okx.com/api/v5/market/candles"
-                "?instId=ETH-USDT-SWAP&bar=15m&limit=16", timeout=5
+                "?instId=ETH-USDT-SWAP&bar=15m&limit=16", timeout=2
             ) as r:
                 candles = _json.loads(r.read())["data"]
             if len(candles) < 16:
@@ -2671,14 +2672,18 @@ class GridProStrategy(TickStrategy):
                 import urllib.request as _ur, json as _json
                 with _ur.urlopen(
                     "https://www.okx.com/api/v5/market/candles"
-                    "?instId=ETH-USDT-SWAP&bar=15m&limit=4", timeout=5
+                    "?instId=ETH-USDT-SWAP&bar=15m&limit=4", timeout=2
                 ) as r:
                     _c = _json.loads(r.read())["data"]
                     self._price_1h_cache["hi"] = max(float(c[2]) for c in _c)
                     self._price_1h_cache["lo"] = min(float(c[3]) for c in _c)
                     self._price_1h_cache["ts"] = now
+                    self._price_1h_fail_count = 0
             except Exception:
-                self._price_1h_cache["ts"] = now - 240.0  # 失败后60s重试（原立即重试→每tick阻塞5s）
+                # 指数退避：60s→120s→240s→300s（上限5min），减少持续故障时的阻塞频率
+                self._price_1h_fail_count += 1
+                _retry_delay = min(60.0 * (2 ** (self._price_1h_fail_count - 1)), 300.0)
+                self._price_1h_cache["ts"] = now - (300.0 - _retry_delay)
         _hi_1h = self._price_1h_cache["hi"]
         _lo_1h = self._price_1h_cache["lo"]
         if _hi_1h > 0 and _lo_1h > 0:

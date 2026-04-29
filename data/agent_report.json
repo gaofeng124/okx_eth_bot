@@ -1,19 +1,19 @@
 {
-  "ran_at": "2026-04-28 09:00 UTC",
-  "eth_price": "N/A (API不可达)",
+  "ran_at": "2026-04-29 00:00 UTC",
+  "eth_price": "N/A (网络受限)",
   "eth_24h_change_pct": "N/A",
   "fear_greed_index": "N/A (API不可达)",
   "funding_rate": "N/A (API不可达)",
-  "market_summary": "沙盒环境外部API不可达，无法获取实时行情。代码维护轮次，专注死代码清理。",
-  "decision": "第56轮：删除regime.py中allowed_channels死代码property（3行），REGIME_ALLOWED_CHANNELS字典保留（line219直接引用）。",
+  "market_summary": "沙盒环境网络受限，无法获取实时市场数据。系统已运行56轮迭代，全P0/P1问题已解决，本轮专注降低urlopen阻塞对事件循环的影响。",
+  "decision": "第57轮：1h缓存API调用超时 5s→2s + 指数退避(60s→120s→240s→300s)，减少API故障时事件循环冻结时间",
   "param_changes": [],
   "code_changes": [
     {
-      "file": "quant/strategy/regime.py",
-      "summary": "删除RegimeDetector.allowed_channels property（@property装饰器+def+return共3行）——无任何外部调用者，为纯死代码"
+      "file": "quant/strategy/grid_pro.py",
+      "summary": "新增_price_1h_fail_count计数器；urlopen timeout 5s→2s；失败时指数退避替代固定60s重试；P4守卫timeout 5s→2s"
     }
   ],
-  "risk_notes": "外部API在沙盒中不可达，无实时市场监控；所有优化均未经实盘数据验证。",
-  "next_focus": "round57：审计regime.py line177冗余elif条件（macro_bias > _MACRO_DOWN_KILL恒真），评估是否可以安全简化而不增加未来维护风险。",
-  "round_number": 56
+  "risk_notes": "网络受限环境下_price_1h_cache永远为0，两个1h-gate（drop/rise）自动跳过（条件检查 > 0）；实盘API正常时fail_count始终为0无影响",
+  "next_focus": "round58：评估regime.py line177 冗余条件（macro_bias > _MACRO_DOWN_KILL在elif链中恒真），是否安全简化",
+  "round_number": 57
 }
