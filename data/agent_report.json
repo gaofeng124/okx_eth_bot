@@ -1,19 +1,19 @@
 {
-  "ran_at": "2026-04-29 03:00 UTC",
-  "eth_price": "N/A (沙盒环境，API不可达)",
+  "ran_at": "2026-04-29 04:00 UTC",
+  "eth_price": "N/A (网络受限)",
   "eth_24h_change_pct": "N/A",
-  "fear_greed_index": "N/A (API不可达)",
-  "funding_rate": "N/A (API不可达)",
-  "market_summary": "外部API不可达（沙盒环境）。聚焦代码审计：第60轮完成 _open_grid_orders 档位逻辑审计，发现并修复 _grid_bias 遗漏 bug。",
-  "decision": "第60轮：grid_pro.py 修复 _grid_bias 未保存导致 TRENDING 模式补仓/越叉检测价格偏差 50% 的 P1 bug（2处公式 + 初始化 + 持久化，共4行）",
+  "fear_greed_index": "N/A (网络受限)",
+  "funding_rate": "N/A (网络受限)",
+  "market_summary": "沙盒环境外网不通，无法获取实时数据。参数面：GRID_DRAWDOWN_FROM_PEAK_USDT(locked)=6.0, GRID_DAILY_TARGET=999, BOT_MAX_SESSION正常，无P0问题。",
+  "decision": "第61轮：_reset_grid_state 补加 _grid_bias=1.0 重置 + status_summary 新增 grid_bias 字段（2处修改共2行）",
   "param_changes": [],
   "code_changes": [
     {
       "file": "quant/strategy/grid_pro.py",
-      "summary": "新增 self._grid_bias 实例变量（默认1.0），_place_grid 末尾保存 bias 值，_maybe_recenter(L1716) 和补仓循环(L2799) 两处 calc_px 公式补充 * self._grid_bias，修复 TRENDING 模式下补仓/穿叉检测价格系统性偏离50%的 P1 bug"
+      "summary": "_reset_grid_state L1686 新增 self._grid_bias=1.0 重置，防止 TRENDING 旧 bias(0.5) 在网格重启周期间残留；status_summary 新增 grid_bias 字段供运维监控"
     }
   ],
-  "risk_notes": "本次修复后 TRENDING 模式行为改变：补仓单现在会下在更靠近 center 的位置（bias=0.5），而非之前的全距离位置。实盘首日需观察 fill 频率是否因此变化。",
-  "next_focus": "round61：审计 _reset_grid_state 调用后 _grid_bias 是否需要重置为 1.0（保守默认），以及验证 status_summary 是否应暴露 grid_bias 字段供监控用",
-  "round_number": "60"
+  "risk_notes": "外部API网络受限（沙盒），无实时市场监控；实盘日志无法访问，优化均未经实盘验证",
+  "next_focus": "round62：验证 1h-drop-gate / 1h-rise-gate 触发频率（检查 analysis.jsonl 中 gate_blocked 事件数量）；或 P2 考虑 GRID_DRAWDOWN_FROM_PEAK_USDT 从 locked=6.0 改为 3.0 贴近小账户实际",
+  "round_number": "61"
 }

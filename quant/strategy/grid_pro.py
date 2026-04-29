@@ -1683,6 +1683,7 @@ class GridProStrategy(TickStrategy):
         self._grid_active = False
         self._grid_center = 0.0
         self._grid_spacing = 0.0
+        self._grid_bias    = 1.0   # 重置为 RANGING 默认值，防止 TRENDING bias 残留
         self._cooldown_until = max(getattr(self, "_cooldown_until", 0.0), now + cooldown)
         log.info("[grid] 网格重置: %s | 冷静期 %.0fs", reason, cooldown)
 
@@ -2852,5 +2853,6 @@ class GridProStrategy(TickStrategy):
             "fgi":           self._fear_greed_index,
             "atr_baseline_bps": round(self._atr_baseline * 10000, 2),
             "eff_tp_mult":   round(self._last_eff_tp_mult, 3),
+            "grid_bias":     self._grid_bias,
             "session":       self._tracker.session_summary(),
         }
