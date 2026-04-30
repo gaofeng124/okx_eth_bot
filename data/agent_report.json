@@ -1,23 +1,19 @@
 {
-  "ran_at": "2026-04-30 06:00 UTC",
-  "eth_price": "N/A（网络受限）",
+  "ran_at": "2026-04-30 07:00 UTC",
+  "eth_price": "N/A (API不可达)",
   "eth_24h_change_pct": "N/A",
-  "fear_greed_index": "N/A（网络受限）",
-  "funding_rate": "N/A",
-  "market_summary": "外部API网络受限，无法获取实时行情。沙盒环境内进行代码级改进：提升fill_entry事件的诊断字段，增加loss_streak_triggered可观测性事件。",
-  "decision": "fill_entry事件新增regime/daily_pnl/grid_spacing_bps三字段；loss_streak触发时新增record_analysis事件，完善事件可观测性链路",
+  "fear_greed_index": "N/A (API不可达)",
+  "funding_rate": "N/A (API不可达)",
+  "market_summary": "沙盒环境网络受限，无法获取实时行情。代码层面继续完善事件可观测性链路，新增grid_opened事件，完整覆盖 grid_opened→fill_entry→fill_tp/emergency_close 全链路，便于后续统计每次网格会话的开仓背景与最终损益。",
+  "decision": "grid_pro.py _place_grid 新增 record_analysis('grid_opened', ...) 事件，记录开格时的 regime/center/spacing_bps/n_active/bias/atr_bps/sz_scale/funding_rate/fgi/daily_pnl_realized，完成网格会话事件链路闭环",
   "param_changes": [],
   "code_changes": [
     {
       "file": "quant/strategy/grid_pro.py",
-      "summary": "fill_entry record_analysis新增regime/daily_pnl_realized/grid_spacing_bps字段，支持按regime分析入场质量"
-    },
-    {
-      "file": "quant/strategy/grid_pro.py",
-      "summary": "loss_streak冷静期触发时新增loss_streak_triggered事件写入analysis.jsonl，记录mid/regime/recent_pnls/cooldown时间"
+      "summary": "_place_grid 末尾新增 record_analysis('grid_opened') 调用，记录14个字段，完成 grid_opened→fill_entry→fill_tp/emergency_close 事件链路"
     }
   ],
-  "risk_notes": "外部API网络受限（沙盒），实盘日志为空，所有优化均为代码层面未经实盘验证",
-  "next_focus": "round64：若实盘日志可访问，统计loss_streak_triggered频率（期望<2次/天）；统计fill_entry按regime分布；若TRENDING_DOWN入场占比>20%说明regime过滤需加强",
-  "round_number": "63"
+  "risk_notes": "实盘日志为空，所有优化均未经真实成交数据验证；网络受限无法获取市场数据",
+  "next_focus": "round65：若有实盘日志，用 grep grid_opened analysis.jsonl 统计网格会话数和平均spacing；若无，考虑优化 per_slot_stop 逻辑（当前0.8U锁定值偏紧）",
+  "round_number": "64"
 }

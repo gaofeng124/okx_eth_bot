@@ -1326,6 +1326,25 @@ class GridProStrategy(TickStrategy):
             self._direction, regime.value, center, spacing * 100,
             placed, n_active, placed, self._vol.vol_regime,
         )
+        try:
+            from quant.detailed_daily_log import record_analysis
+            record_analysis(
+                "grid_opened",
+                direction=self._direction,
+                regime=regime.value,
+                center=round(center, 2),
+                spacing_bps=round(spacing * 10000, 2),
+                n_active=n_active,
+                bias=round(bias, 3),
+                atr_bps=round(_atr_bps, 2),
+                sz_scale=round(_sz_scale, 2),
+                funding_rate=round(self._funding_rate, 6),
+                fgi=self._fear_greed_index,
+                daily_pnl_realized=round(self._pnl.realized, 4),
+                placed=placed,
+            )
+        except Exception:
+            pass
 
     def _update_tp(self) -> None:
         """取消旧 TP，以当前 VWAP + 格宽重新挂单。
