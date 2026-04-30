@@ -1046,6 +1046,7 @@ class GridProStrategy(TickStrategy):
             log.error("[grid] 市价平仓失败: %s", e)
 
         sign = self._pnl_sign()
+        session_net = 0.0  # 本次会话所有 slot 净盈亏之和
         for s in held:
             # PnL 方向乘子：long→+1，short→-1（short 的 mid<fill 才盈利）
             raw_pct = (mid - s.fill_price) / s.fill_price if s.fill_price > 0 else 0.0
@@ -1055,26 +1056,7 @@ class GridProStrategy(TickStrategy):
             fee = self._notional(s.fill_sz, mid) * self._EMERGENCY_CLOSE_FEE_BPS / 10000.0
             net_after = net - fee
             self._pnl.add(net_after)
-            # 2026-04-22 17:30 改动 5：记录近 3 笔平仓 PnL 给连亏冷静 gate
-            self._recent_close_pnls.append(net_after)
-            if len(self._recent_close_pnls) >= 2 and all(p < 0 for p in list(self._recent_close_pnls)[-2:]):
-                self._loss_streak_until = time.time() + 1800.0  # 冷静 30min
-                log.warning(
-                    "[grid][loss-streak] 连续 2 笔亏损 → 冷静 30min 禁开新仓（至 %s）",
-                    datetime.fromtimestamp(self._loss_streak_until).strftime('%H:%M:%S'),
-                )
-                try:
-                    from quant.detailed_daily_log import record_analysis
-                    record_analysis(
-                        "loss_streak_triggered",
-                        mid=mid,
-                        regime=self._current_regime.value,
-                        recent_pnls=list(self._recent_close_pnls),
-                        cooldown_until=datetime.fromtimestamp(self._loss_streak_until).strftime('%H:%M:%S'),
-                        daily_pnl_realized=round(self._pnl.realized, 4),
-                    )
-                except Exception:
-                    pass
+            session_net += net_after
             self._tracker.record(
                 channel="grid",
                 pnl_pct=pnl_pct,
@@ -1086,6 +1068,29 @@ class GridProStrategy(TickStrategy):
             s.entry_order_id = ""
             s.fill_price = 0.0
             s.fill_sz    = 0.0
+
+        # 按会话（而非单 slot）追踪连亏：单次紧急平仓算 1 次事件，避免多 slot 共平一次却
+        # 提前触发 loss_streak（原 bug：3 slot 同时亏 → slot2 append 后即触发冷静 30min）
+        self._recent_close_pnls.append(session_net)
+        if len(self._recent_close_pnls) >= 2 and all(p < 0 for p in list(self._recent_close_pnls)[-2:]):
+            self._loss_streak_until = time.time() + 1800.0  # 冷静 30min
+            log.warning(
+                "[grid][loss-streak] 连续 2 次紧急平仓会话亏损 → 冷静 30min 禁开新仓（至 %s）",
+                datetime.fromtimestamp(self._loss_streak_until).strftime('%H:%M:%S'),
+            )
+            try:
+                from quant.detailed_daily_log import record_analysis
+                record_analysis(
+                    "loss_streak_triggered",
+                    mid=mid,
+                    regime=self._current_regime.value,
+                    recent_pnls=list(self._recent_close_pnls),
+                    session_net=round(session_net, 4),
+                    cooldown_until=datetime.fromtimestamp(self._loss_streak_until).strftime('%H:%M:%S'),
+                    daily_pnl_realized=round(self._pnl.realized, 4),
+                )
+            except Exception:
+                pass
 
     # ══════════════════════════════════════════════════════════════════════════
     # 紧急平仓

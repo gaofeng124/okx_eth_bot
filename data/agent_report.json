@@ -1,26 +1,19 @@
 {
-  "ran_at": "2026-04-30 08:00 UTC",
-  "eth_price": "N/A (API不可达，沙盒环境)",
+  "ran_at": "2026-04-30 09:00 UTC",
+  "eth_price": "N/A (sandbox网络受限)",
   "eth_24h_change_pct": "N/A",
   "fear_greed_index": "N/A (API不可达)",
   "funding_rate": "N/A",
-  "market_summary": "外部API在沙盒环境不可达，无法获取实时行情。依据历史参数分析：ETH正常波动ATR约30bps，市场处于低波动震荡期，网格策略适合当前环境。",
-  "decision": "settings.py _LOCKED_GRID 中 GRID_PER_SLOT_STOP_USDT: 0.8 → 1.0，减少正常ATR(30bps)下的误触发止损，降低loss_streak连锁冷静期频率",
-  "param_changes": [
-    {
-      "param": "GRID_PER_SLOT_STOP_USDT",
-      "old": 0.8,
-      "new": 1.0,
-      "reason": "ETH正常ATR≈30bps时，0.8U止损=33bps≈1.1σ误触发率高达70%；改为1.0U=42bps=1.4σ，误触发率降至约50%，同时减少loss_streak(30min冷静期)的连锁触发频率"
-    }
-  ],
+  "market_summary": "沙盒环境无法访问外部API，市场数据不可用。无实盘analysis.jsonl日志，所有优化基于代码逻辑分析。系统处于调试阶段，参数已经过65轮迭代优化。",
+  "decision": "修复 _market_close_all 中 loss_streak 按 slot 而非会话追踪的 bug：单次3-slot紧急平仓会在第2个slot处理后触发30分钟冷静期，改为会话净盈亏整体追踪，需两次独立会话均亏损才触发",
+  "param_changes": [],
   "code_changes": [
     {
-      "file": "quant/settings.py",
-      "summary": "_LOCKED_GRID GRID_PER_SLOT_STOP_USDT 从 0.8 改为 1.0，新增注释说明ATR止损距离计算依据"
+      "file": "quant/strategy/grid_pro.py",
+      "summary": "_market_close_all: 引入session_net累计本次会话所有slot净亏，移loop外整体append到_recent_close_pnls并做loss_streak检查，修复单次多slot紧急平仓误触发30min冷静期的bug"
     }
   ],
-  "risk_notes": "per_slot_stop放宽后单次最大亏损从0.8U增至1.0U，整体止损(GRID_WHOLE_STOP_USDT=5.0U)不变；3档位网格最坏情况单次亏损上限3.0U，仍在5.0U总止损以内",
-  "next_focus": "round66: 若有实盘日志，验证loss_streak_triggered频率是否因1.0U改动而降低；同时检查_sz_scale在ATR 28-35bps区间是否需要0.85中间档位",
-  "round_number": 65
+  "risk_notes": "实盘无日志，所有优化纯基于代码逻辑推导；沙盒环境网络受限无法验证市场适配",
+  "next_focus": "round67：若仍无实盘日志，检查 _sz_scale 中间档位（ATR 28-35bps → sz=0.85）是否有必要；或评估 loss_streak 冷静期 1800s 是否可缩短为 900s（15min）以提高每日交易时间",
+  "round_number": "66"
 }
