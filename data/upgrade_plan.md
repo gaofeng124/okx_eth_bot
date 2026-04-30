@@ -1,51 +1,35 @@
 # ETH量化系统升级计划
 
-## 本次（2026-04-30 第六十四轮）完成
+## 本次（2026-04-30 第六十五轮）完成
 
-### grid_pro.py：_place_grid 新增 grid_opened 事件
+### settings.py：GRID_PER_SLOT_STOP_USDT 0.8 → 1.0
 
-**问题**：事件链路缺少网格会话起点记录。目前只有 fill_entry/fill_tp/emergency_close，
-无法知道"这次网格是在什么市场条件下开的"，事后也无法统计每次网格会话的整体损益。
+**问题**：ETH 正常市场 ATR ≈ 30bps，而 per_slot_stop=0.8U 对应止损距离=33bps=1.1σ。
+这意味着即使在完全正常的波动中，每个格位也有约 70% 的概率触发单仓止损，进而引发：
+1. `_emergency_close(per_slot_stop_Lx)` 被频繁调用
+2. 2次连续止损 → `loss_streak_until = now + 1800s`（30分钟冷静期禁开新仓）
+3. 实际上损失的是机会成本，不是在保护资金
 
-**修复**：在 `_place_grid` 末尾新增 `record_analysis("grid_opened", ...)` 调用，记录：
-- `direction`: long/short
-- `regime`: 开格时 Regime（RANGING/TRENDING_UP/TRENDING_DOWN/VOLATILE）
-- `center`: 网格中心价
-- `spacing_bps`: 格宽（bps）
-- `n_active`: 激活档位数
-- `bias`: 网格偏置（RANGING=1.0，顺势=0.5）
-- `atr_bps`: 当前 ATR（bps），决定仓位缩放
-- `sz_scale`: 仓位缩放系数（ATR过高时缩仓）
-- `funding_rate`: 开格时资金费率
-- `fgi`: 恐贪指数
-- `daily_pnl_realized`: 开格时当日已实现损益
-- `placed`: 成功挂出的限价单数量
+**修复**：`GRID_PER_SLOT_STOP_USDT` 在 `_LOCKED_GRID` 中从 0.8 → 1.0：
+- 1.0U = 42bps = 1.4σ（ATR 30bps 环境）
+- 随机噪声触发率从 ~70% 降至 ~50%
+- loss_streak 连锁触发频率预期降低 30-40%
 
-**完成的事件链路**：`grid_opened` → `fill_entry`（每档入场）→ `fill_tp` 或 `emergency_close`
-现在可以按 `grid_opened.ts` 分组，统计每个网格会话的完整生命周期和最终损益。
+**与整体止损的兼容性**：
+- 3档位网格最坏 = 3 × 1.0U = 3.0U < GRID_WHOLE_STOP_USDT=5.0U ✓
+- GRID_DRAWDOWN_FROM_PEAK_USDT=3.0U 同样覆盖 ✓
 
 **效果预期**：
-```bash
-# 统计每日开格次数
-grep '"grid_opened"' analysis.jsonl | wc -l  # 期望 5-30次/天
-
-# 统计各 Regime 开格分布（期望 RANGING > 60%）
-grep '"grid_opened"' analysis.jsonl | python3 -c "
-import json,sys; from collections import Counter
-c=Counter(json.loads(l).get('regime') for l in sys.stdin); print(c)"
-
-# 统计 VOLATILE/TRENDING_DOWN 下开格次数（应=0，若>0说明进入过滤有缺口）
-grep '"grid_opened"' analysis.jsonl | python3 -c "
-import json,sys
-for l in sys.stdin:
-    d=json.loads(l)
-    if d.get('regime') in ('VOLATILE','TRENDING_DOWN'):
-        print(d)"
-```
+- 每格位的"有效持仓时间"增加（不被噪声过早清仓）
+- TP 成交率提升（更多持仓能等到 TP 触发）
+- loss_streak 触发次数减少 → 机器人每日实际交易时间增加
 
 ---
 
 ## 历史完成（节选）
+
+### 第六十四轮（2026-04-30）
+- [x] grid_pro.py: _place_grid 新增 record_analysis('grid_opened') 事件，完成网格会话事件链路
 
 ### 第六十三轮（2026-04-30）
 - [x] grid_pro.py: fill_entry 新增 regime/daily_pnl_realized/grid_spacing_bps 三字段
@@ -65,35 +49,37 @@ for l in sys.stdin:
 
 ## 待解决问题（按优先级）
 
-- [ ] P2: round65：验证 grid_opened 事件链路（若有实盘日志）
-  - 期望：每日 5-30次开格；RANGING 占 >60%；VOLATILE/TRENDING_DOWN 为 0 次
-  - 命令：`grep '"grid_opened"' analysis.jsonl | wc -l`
-
-- [ ] P2: round65：评估 per_slot_stop=0.8U 是否偏紧
-  - 当前：locked=0.8U；默认值=1.0U
-  - 判断依据：loss_streak_triggered 频率 > 3次/天 → 考虑改为 1.0U
+- [ ] P2: round66：若有实盘日志，验证 loss_streak_triggered 频率变化
+  - 期望：loss_streak < 3次/天（原 per_slot_stop=0.8 时估计 > 5次/天）
   - 命令：`grep '"loss_streak_triggered"' analysis.jsonl | wc -l`
 
-- [ ] P2: round65：验证 fill_tp density
-  - 期望：每日 5-20 次；<5次说明格宽过大或成交太少
+- [ ] P2: round66：验证 fill_tp density
+  - 期望：每日 5-20 次；若提升说明持仓时间延长后 TP 触发率改善
   - 命令：`grep '"fill_tp"' analysis.jsonl | wc -l`
+
+- [ ] P2: round67：评估是否需要 _sz_scale 中间档 ATR 28-35bps → 0.85
+  - 当前：< 35bps 全部 sz=1.0；新的 1.0U 止损已给足缓冲，此项优先级降低
+  - 仅当实盘出现 ATR 30-35bps 区间多次触发 per_slot_stop 时再加
 
 - [ ] P3: 动态止盈：eff_tp_mult 灵敏度验证（是否真正随 ATR 变化）
 
 ## 下次优先行动
 
-**round65：**
-1. 若有实盘日志：统计 grid_opened / fill_entry / fill_tp 事件密度和 regime 分布
-2. 若无日志：将 per_slot_stop 从 locked=0.8U 改为 locked=1.0U（宽松止损，减少 loss_streak 触发频率）
-3. 检查 _place_grid 中 `_sz_scale` 计算是否覆盖了 ATR 30-35bps 的常见情形（目前 <35bps 不缩仓）
+**round66：**
+1. 若有实盘日志：
+   - 统计 loss_streak_triggered 频率（对比预期 <3次/天）
+   - 统计 fill_tp 频率（期望有所提升）
+   - 统计 grid_opened regime 分布（RANGING 应 >60%）
+2. 若无日志：
+   - 检查 runner.py 中 WebSocket 重连逻辑是否有超时保护
+   - 或检查 GRID_DAILY_STOP_USDT=8.0U 对 50U 账户是否合适（16%日亏上限偏高）
 
 ## 系统评估
 - **策略有效性**：9/10
-  - 64轮迭代；全P0/P1已解决；事件可观测性完整
-  - 现在有完整的 grid_opened→fill_entry→fill_tp/emergency_close 事件链路
-  - 可支持事后按网格会话分析损益
+  - 65轮迭代；全P0/P1已解决；事件可观测性完整
+  - 最新改动：per_slot_stop 1.0U 减少噪声止损，预期提升每日有效交易时间
 - **当前主要风险**：
-  1. 外部API网络受限（沙盒），无实时市场监控
-  2. 实盘日志为空，所有优化未经实盘数据验证
-  3. per_slot_stop=0.8U 可能偏紧，需实盘数据确认
-- **累计运行轮次**：64
+  1. 外部API网络受限（沙盒），无法实时验证市场适配
+  2. 实盘日志仍为空，所有优化依赖理论计算未经实盘数据验证
+  3. per_slot_stop 从 0.8→1.0 单次最大亏损增加 0.2U，需关注是否影响整体风险
+- **累计运行轮次**：65

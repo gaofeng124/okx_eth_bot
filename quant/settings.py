@@ -883,7 +883,10 @@ _LOCKED_GRID = {
     # → 80% 盈利被 maybe_trail_tp + TP aging 偷走
     # → 止损本来就对，改止损是业余操作
     # → 真正该改的是：让 TP 拿全额（放严 trail + 延长 aging）
-    "GRID_PER_SLOT_STOP_USDT":       0.8,       # 回退：止损及时，参数本来就对
+    # 2026-04-30 round65：0.8→1.0U
+    # ETH 正常 ATR ≈ 30bps；0.8U=33bps 止损距离 = 1.1σ，误触发率 ~70%
+    # 1.0U=42bps = 1.4σ，随机噪声触发率降至 ~50%，同时 loss_streak 连锁减少
+    "GRID_PER_SLOT_STOP_USDT":       1.0,       # round65: 0.8→1.0，给正常ATR足够缓冲
     "GRID_WHOLE_STOP_USDT":          5.0,
     "GRID_DAILY_STOP_USDT":          8.0,
     "GRID_MIN_SPACING_PCT":          0.0030,

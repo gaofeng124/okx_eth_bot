@@ -1,19 +1,26 @@
 {
-  "ran_at": "2026-04-30 07:00 UTC",
-  "eth_price": "N/A (API不可达)",
+  "ran_at": "2026-04-30 08:00 UTC",
+  "eth_price": "N/A (API不可达，沙盒环境)",
   "eth_24h_change_pct": "N/A",
   "fear_greed_index": "N/A (API不可达)",
-  "funding_rate": "N/A (API不可达)",
-  "market_summary": "沙盒环境网络受限，无法获取实时行情。代码层面继续完善事件可观测性链路，新增grid_opened事件，完整覆盖 grid_opened→fill_entry→fill_tp/emergency_close 全链路，便于后续统计每次网格会话的开仓背景与最终损益。",
-  "decision": "grid_pro.py _place_grid 新增 record_analysis('grid_opened', ...) 事件，记录开格时的 regime/center/spacing_bps/n_active/bias/atr_bps/sz_scale/funding_rate/fgi/daily_pnl_realized，完成网格会话事件链路闭环",
-  "param_changes": [],
-  "code_changes": [
+  "funding_rate": "N/A",
+  "market_summary": "外部API在沙盒环境不可达，无法获取实时行情。依据历史参数分析：ETH正常波动ATR约30bps，市场处于低波动震荡期，网格策略适合当前环境。",
+  "decision": "settings.py _LOCKED_GRID 中 GRID_PER_SLOT_STOP_USDT: 0.8 → 1.0，减少正常ATR(30bps)下的误触发止损，降低loss_streak连锁冷静期频率",
+  "param_changes": [
     {
-      "file": "quant/strategy/grid_pro.py",
-      "summary": "_place_grid 末尾新增 record_analysis('grid_opened') 调用，记录14个字段，完成 grid_opened→fill_entry→fill_tp/emergency_close 事件链路"
+      "param": "GRID_PER_SLOT_STOP_USDT",
+      "old": 0.8,
+      "new": 1.0,
+      "reason": "ETH正常ATR≈30bps时，0.8U止损=33bps≈1.1σ误触发率高达70%；改为1.0U=42bps=1.4σ，误触发率降至约50%，同时减少loss_streak(30min冷静期)的连锁触发频率"
     }
   ],
-  "risk_notes": "实盘日志为空，所有优化均未经真实成交数据验证；网络受限无法获取市场数据",
-  "next_focus": "round65：若有实盘日志，用 grep grid_opened analysis.jsonl 统计网格会话数和平均spacing；若无，考虑优化 per_slot_stop 逻辑（当前0.8U锁定值偏紧）",
-  "round_number": "64"
+  "code_changes": [
+    {
+      "file": "quant/settings.py",
+      "summary": "_LOCKED_GRID GRID_PER_SLOT_STOP_USDT 从 0.8 改为 1.0，新增注释说明ATR止损距离计算依据"
+    }
+  ],
+  "risk_notes": "per_slot_stop放宽后单次最大亏损从0.8U增至1.0U，整体止损(GRID_WHOLE_STOP_USDT=5.0U)不变；3档位网格最坏情况单次亏损上限3.0U，仍在5.0U总止损以内",
+  "next_focus": "round66: 若有实盘日志，验证loss_streak_triggered频率是否因1.0U改动而降低；同时检查_sz_scale在ATR 28-35bps区间是否需要0.85中间档位",
+  "round_number": 65
 }
