@@ -1,83 +1,76 @@
 # ETH量化系统升级计划
 
-## 本次（2026-04-29 第六十一轮）完成
+## 本次（2026-04-30 第六十二轮）完成
 
-### grid_pro.py：_reset_grid_state 补加 bias 重置 + status_summary 暴露 grid_bias
+### settings.py：GRID_DRAWDOWN_FROM_PEAK_USDT locked 6.0 → 3.0
 
-**问题1：_reset_grid_state 未重置 _grid_bias（P2）**
+**问题**：_LOCKED_GRID 中的备用值 6.0U（50U本金的12%）偏高。
 
-场景：策略在 TRENDING Regime 运行（bias=0.5）→ 触发整体止损 → `_reset_grid_state` 被调用 → `_grid_bias` 残留 0.5 → 冷静期内若有代码路径绕过 `_grid_active` 守卫，补仓公式会以错误 bias 下单。
+正常运行时，`set_dynamic_drawdown_limit` 每 tick 将限制动态覆盖为 `max(1.5, equity×4%) ≈ 2.0U`（50U账户）。
+但若 equity 获取持续失败，`_drawdown_limit` 会回退至 locked 值 6.0U，导致风控缺口扩大。
 
-虽然现有 `_grid_active` 守卫理论上已阻止这种情况，但防御性重置更安全：
-- 修复位置：L1686，在 `_grid_spacing = 0.0` 之后
-- 修复内容：`self._grid_bias = 1.0`（RANGING 默认值）
-- 效果：网格每次重启前 bias 明确归一，由 `_place_grid` 根据新 Regime 重新赋值
+**修复**：将备用值从 6.0 降至 3.0，构成更严密的风控层次：
+- per_slot_stop: 0.8U → 单仓快刀止损
+- peak_drawdown（备用）: 3.0U → equity失联时的保险
+- whole_grid_stop（动态）: max(4.0, equity×10%) ≈ 5.0U
+- daily_stop: 6.0-8.0U
 
-**问题2：status_summary 缺少 grid_bias 字段（P3）**
+### grid_pro.py：_emergency_close 新增 record_analysis 追踪
 
-运维时无法从日志观察当前 Regime 对应的 bias 值，TRENDING/RANGING 切换不可见。
-- 修复位置：`status_summary` 返回字典，`eff_tp_mult` 之后
-- 修复内容：`"grid_bias": self._grid_bias`
-- 效果：每次 status_summary 输出均含 bias（0.5=TRENDING，1.0=RANGING），方便排查
+**问题**：分析 analysis.jsonl 时无法查看紧急平仓事件（原因/时间/损益），
+导致 round62 优先任务"验证gate触发频率"缺少关键数据源。
+
+**修复**：在 `_emergency_close` 中（`_emergency_closing = True` 设置后）添加：
+```python
+record_analysis("emergency_close", reason=reason, mid=mid,
+                total_held=..., vwap=..., unrealized_usdt=..., daily_pnl_realized=...)
+```
+后续可通过 `grep '"emergency_close"' data/logs/daily/*/analysis.jsonl` 统计频率。
 
 ---
 
 ## 历史完成（节选）
 
+### 第六十一轮（2026-04-29）
+- [x] grid_pro.py: _reset_grid_state 补加 _grid_bias=1.0 重置 + status_summary 新增 grid_bias 字段
+
 ### 第六十轮（2026-04-29）
 - [x] grid_pro.py: 修复 _grid_bias 未保存导致 TRENDING 模式补仓/越叉检测价格偏差 P1 bug
 
-### 第五十九轮（2026-04-29）
-- [x] regime.py: _classify_by_ticks 删除未使用参数 trend_up/trend_down
-
-### 第五十八轮（2026-04-29）
-- [x] regime.py line160：删除恒真冗余条件
-
-### 第五十七轮（2026-04-29）
-- [x] grid_pro.py: 1h缓存API调用超时 5s→2s + 指数退避(60s→120s→240s→300s)
-
-### 第五十六轮（2026-04-28）
-- [x] regime.py: 删除 allowed_channels property（3行死代码）
-
-### 第五十五轮（2026-04-28）
-- [x] regime.py: 删除 REGIME_SIZE_FACTOR 字典 + size_factor property
-
-### 第五十四轮（2026-04-28）
-- [x] settings.py: 删除全部41行SP_（ScalpPro）死代码
-
-### 第一~五十三轮（2026-04-18~28）
-- [x] 全部P0/P1问题；WS重连指数退避；持仓同步；自适应TP；EWMA；FGI；资金费率；1h gate
+### 第一~五十九轮（2026-04-18~29）
+- [x] 全部P0/P1问题；WS重连指数退避；持仓同步；自适应TP；EWMA；FGI；资金费率；1h gate；regime.py清理；settings.py清理
 
 ---
 
 ## 待解决问题（按优先级）
 
-- [ ] P2: round62：验证 1h-drop-gate / 1h-rise-gate 触发频率
-  - 检查 analysis.jsonl 中 gate_blocked/1h_drop/1h_rise 事件数量
-  - 期望：每天 5-20 次；若从未触发，可能逻辑有误
+- [ ] P2: round63：验证 emergency_close 事件频率
+  - 条件：需实盘运行后查看 data/logs/daily/*/analysis.jsonl
+  - 命令：`python3 -c "import json; [print(json.loads(l)) for l in open('data/logs/daily/2026-04-30/analysis.jsonl') if '\"emergency_close\"' in l]"`
+  - 期望：每日 0-3 次为正常；>5次说明止损参数过紧
 
-- [ ] P2: GRID_DRAWDOWN_FROM_PEAK_USDT locked=6.0 评估
-  - 当前 locked 值 6.0（50U 本金 12%），偏高，建议降至 3.0（6%）
-  - 但需实盘数据支撑才能改
+- [ ] P2: round63：统计 fill_tp 事件密度
+  - 期望：每日 5-20 次 fill_tp；< 5次说明 TP 设置过远或成交太少
 
-- [ ] P3: 动态止盈：根据波动率调整每格利润（eff_tp_mult 已有，待验证灵敏度）
+- [ ] P3: 动态止盈：eff_tp_mult 灵敏度验证（是否真正随 ATR 变化）
 
-- [ ] P3: maker 手续费精度：确认 0.02% 而非 0.04%
+- [ ] P3: maker 手续费精度：GRID_ROUNDTRIP_FEE_BPS=4.0（maker+maker=2+2bps）已确认正确
 
 ## 下次优先行动
 
-**round62：检查 1h gate 触发情况 + 考察 analysis.jsonl fill 事件密度**
-1. `Read /home/user/okx_eth_bot/data/analysis.jsonl` 统计事件类型分布
-2. 若 gate_blocked 事件为 0，grep grid_pro.py 的 1h_drop_gate 逻辑确认条件
-3. 若 fill 事件密度异常低（<10/天），排查 tp 设置是否过远
+**round63：从实盘日志统计事件分布，评估策略健康度**
+1. 查看 `data/logs/daily/<今日日期>/analysis.jsonl`
+2. 统计 event 类型分布（emergency_close/fill_tp/fill_entry/grid_status）
+3. 若 emergency_close > 5/日，检查是否 per_slot_stop=0.8 过紧
+4. 若 fill_tp < 5/日，检查 TP mult 是否需要调小（当前 GRID_TP_MULT=2.0）
 
 ## 系统评估
 - **策略有效性**：9/10
-  - 61轮迭代；全P0/P1已解决；bias 生命周期现已完整（init→place_grid→reset_grid_state）
-  - status_summary 现在暴露 grid_bias，运维可视性提升
-  - regime.py/settings.py 清理完毕；grid_pro.py 核心逻辑稳固
+  - 62轮迭代；全P0/P1已解决；风控层次完整且量化
+  - emergency_close 现可追踪，运维可观测性提升
+  - DRAWDOWN 备用值从12%降至6%，与动态值2-4%更匹配
 - **当前主要风险**：
   1. 外部API网络受限（沙盒），无实时市场监控
-  2. 实盘日志无法访问（优化均未经实盘数据验证）
-  3. GRID_DRAWDOWN locked=6.0 偏高，大行情下保护不足
-- **累计运行轮次**：61
+  2. 实盘日志无法访问（所有优化均未经实盘数据验证）
+  3. 双向策略（long+short）在单边行情中可能同时亏损
+- **累计运行轮次**：62

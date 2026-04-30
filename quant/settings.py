@@ -890,7 +890,7 @@ _LOCKED_GRID = {
     "GRID_MAX_SPACING_PCT":          0.0080,
     "GRID_TP_MULT":                  2.0,       # 保留 2.0 —— 拉大 TP 距离
     "GRID_LEVERAGE":                 10.0,
-    "GRID_DRAWDOWN_FROM_PEAK_USDT":  6.0,
+    "GRID_DRAWDOWN_FROM_PEAK_USDT":  3.0,  # 降至6%（原12%偏高；动态覆盖=max(1.5,equity×4%)≈2U，此为备用上界）
 }
 
 def _locked(key, fallback_default):

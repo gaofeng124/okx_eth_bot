@@ -1084,6 +1084,19 @@ class GridProStrategy(TickStrategy):
             return
         self._emergency_closing = True
         log.warning("[grid] ═══ 紧急平仓 reason=%s ═══", reason)
+        try:
+            from quant.detailed_daily_log import record_analysis
+            record_analysis(
+                "emergency_close",
+                reason=reason,
+                mid=mid,
+                total_held=self._total_held,
+                vwap=round(self._vwap, 2),
+                unrealized_usdt=round(self._calc_unrealized(mid), 4),
+                daily_pnl_realized=round(self._pnl.realized, 4),
+            )
+        except Exception:
+            pass
 
         # 取消所有入场单
         for s in self._slots:
