@@ -1063,6 +1063,18 @@ class GridProStrategy(TickStrategy):
                     "[grid][loss-streak] 连续 2 笔亏损 → 冷静 30min 禁开新仓（至 %s）",
                     datetime.fromtimestamp(self._loss_streak_until).strftime('%H:%M:%S'),
                 )
+                try:
+                    from quant.detailed_daily_log import record_analysis
+                    record_analysis(
+                        "loss_streak_triggered",
+                        mid=mid,
+                        regime=self._current_regime.value,
+                        recent_pnls=list(self._recent_close_pnls),
+                        cooldown_until=datetime.fromtimestamp(self._loss_streak_until).strftime('%H:%M:%S'),
+                        daily_pnl_realized=round(self._pnl.realized, 4),
+                    )
+                except Exception:
+                    pass
             self._tracker.record(
                 channel="grid",
                 pnl_pct=pnl_pct,
@@ -1784,6 +1796,9 @@ class GridProStrategy(TickStrategy):
                     target_price=s.target_price,
                     vwap=self._vwap,
                     total_held=self._total_held,
+                    regime=self._current_regime.value,
+                    daily_pnl_realized=round(self._pnl.realized, 4),
+                    grid_spacing_bps=round(self._grid_spacing * 10000, 2),
                 )
             except Exception:
                 pass

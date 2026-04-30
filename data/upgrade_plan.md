@@ -1,76 +1,76 @@
 # ETH量化系统升级计划
 
-## 本次（2026-04-30 第六十二轮）完成
+## 本次（2026-04-30 第六十三轮）完成
 
-### settings.py：GRID_DRAWDOWN_FROM_PEAK_USDT locked 6.0 → 3.0
+### grid_pro.py：fill_entry 新增三个诊断字段
 
-**问题**：_LOCKED_GRID 中的备用值 6.0U（50U本金的12%）偏高。
+**问题**：`fill_entry` 事件缺少 `regime`、`daily_pnl_realized`、`grid_spacing_bps`，
+导致事后分析时无法回答"哪种 Regime 下的入场更容易亏损"这一关键问题。
 
-正常运行时，`set_dynamic_drawdown_limit` 每 tick 将限制动态覆盖为 `max(1.5, equity×4%) ≈ 2.0U`（50U账户）。
-但若 equity 获取持续失败，`_drawdown_limit` 会回退至 locked 值 6.0U，导致风控缺口扩大。
+**修复**：在 `record_analysis("fill_entry", ...)` 调用中新增三字段：
+- `regime`：入场时当前 Regime（RANGING/TRENDING_UP/TRENDING_DOWN/VOLATILE）
+- `daily_pnl_realized`：入场时已累计日盈亏，便于判断高风险入场（日亏损中仍继续入场）
+- `grid_spacing_bps`：入场时格宽（bps），支持分析格宽与收益率相关性
 
-**修复**：将备用值从 6.0 降至 3.0，构成更严密的风控层次：
-- per_slot_stop: 0.8U → 单仓快刀止损
-- peak_drawdown（备用）: 3.0U → equity失联时的保险
-- whole_grid_stop（动态）: max(4.0, equity×10%) ≈ 5.0U
-- daily_stop: 6.0-8.0U
+**效果预期**：运行后可通过 `grep '"fill_entry"' analysis.jsonl | python3 -c "import sys,json; [print(json.loads(l).get('regime')) for l in sys.stdin]"` 统计入场分布
 
-### grid_pro.py：_emergency_close 新增 record_analysis 追踪
+### grid_pro.py：loss_streak 触发时写入 analysis.jsonl
 
-**问题**：分析 analysis.jsonl 时无法查看紧急平仓事件（原因/时间/损益），
-导致 round62 优先任务"验证gate触发频率"缺少关键数据源。
+**问题**：`_loss_streak_until` 触发时仅有日志，无法在 analysis.jsonl 中统计频率和模式。
 
-**修复**：在 `_emergency_close` 中（`_emergency_closing = True` 设置后）添加：
-```python
-record_analysis("emergency_close", reason=reason, mid=mid,
-                total_held=..., vwap=..., unrealized_usdt=..., daily_pnl_realized=...)
-```
-后续可通过 `grep '"emergency_close"' data/logs/daily/*/analysis.jsonl` 统计频率。
+**修复**：在连续2笔亏损冷静期触发时（`_emergency_close` 循环中），新增 `record_analysis("loss_streak_triggered", ...)` 调用，记录：
+- `mid`：触发时市场中间价
+- `regime`：触发时 Regime
+- `recent_pnls`：近3笔平仓PnL（含本次）
+- `cooldown_until`：冷静期结束时间
+- `daily_pnl_realized`：当日已实现PnL
+
+**效果预期**：`grep '"loss_streak_triggered"' analysis.jsonl | wc -l` 应为 0-2/天；>3次说明 per_slot_stop=0.8U 可能偏紧
 
 ---
 
 ## 历史完成（节选）
 
+### 第六十二轮（2026-04-30）
+- [x] settings.py: GRID_DRAWDOWN_FROM_PEAK_USDT locked 6.0 → 3.0
+- [x] grid_pro.py: _emergency_close 新增 record_analysis 追踪
+
 ### 第六十一轮（2026-04-29）
-- [x] grid_pro.py: _reset_grid_state 补加 _grid_bias=1.0 重置 + status_summary 新增 grid_bias 字段
+- [x] grid_pro.py: _reset_grid_state 补加 _grid_bias=1.0 重置
 
-### 第六十轮（2026-04-29）
-- [x] grid_pro.py: 修复 _grid_bias 未保存导致 TRENDING 模式补仓/越叉检测价格偏差 P1 bug
-
-### 第一~五十九轮（2026-04-18~29）
-- [x] 全部P0/P1问题；WS重连指数退避；持仓同步；自适应TP；EWMA；FGI；资金费率；1h gate；regime.py清理；settings.py清理
+### 第一~六十轮（2026-04-18~29）
+- [x] 全部P0/P1问题；WS重连；持仓同步；自适应TP；EWMA；FGI；资金费率；1h gate等
 
 ---
 
 ## 待解决问题（按优先级）
 
-- [ ] P2: round63：验证 emergency_close 事件频率
-  - 条件：需实盘运行后查看 data/logs/daily/*/analysis.jsonl
-  - 命令：`python3 -c "import json; [print(json.loads(l)) for l in open('data/logs/daily/2026-04-30/analysis.jsonl') if '\"emergency_close\"' in l]"`
-  - 期望：每日 0-3 次为正常；>5次说明止损参数过紧
+- [ ] P2: round64：统计 loss_streak_triggered 频率
+  - 命令：`grep '"loss_streak_triggered"' data/logs/daily/*/analysis.jsonl | wc -l`
+  - 期望：每日 0-2 次；>3次说明 per_slot_stop=0.8U 过紧，考虑调到 1.0U
 
-- [ ] P2: round63：统计 fill_tp 事件密度
-  - 期望：每日 5-20 次 fill_tp；< 5次说明 TP 设置过远或成交太少
+- [ ] P2: round64：统计 fill_entry 的 regime 分布
+  - 命令：`python3 -c "import json; [print(json.loads(l).get('regime')) for l in open('data/logs/daily/2026-04-30/analysis.jsonl') if '\"fill_entry\"' in l]"`
+  - 期望：RANGING 占 >70%；TRENDING_DOWN/VOLATILE 占比 >20% 说明 regime 过滤需加强
+
+- [ ] P2: round64：统计 fill_tp 事件密度
+  - 期望：每日 5-20 次；<5次说明格宽过大或成交太少
 
 - [ ] P3: 动态止盈：eff_tp_mult 灵敏度验证（是否真正随 ATR 变化）
 
-- [ ] P3: maker 手续费精度：GRID_ROUNDTRIP_FEE_BPS=4.0（maker+maker=2+2bps）已确认正确
-
 ## 下次优先行动
 
-**round63：从实盘日志统计事件分布，评估策略健康度**
-1. 查看 `data/logs/daily/<今日日期>/analysis.jsonl`
-2. 统计 event 类型分布（emergency_close/fill_tp/fill_entry/grid_status）
-3. 若 emergency_close > 5/日，检查是否 per_slot_stop=0.8 过紧
-4. 若 fill_tp < 5/日，检查 TP mult 是否需要调小（当前 GRID_TP_MULT=2.0）
+**round64：从实盘日志验证 round63 新增事件**
+1. 若有日志：`grep '"loss_streak_triggered"\|"fill_entry"\|"fill_tp"\|"emergency_close"' analysis.jsonl | python3 -c "import json,sys; from collections import Counter; c=Counter(); [c.update([json.loads(l)['event']]) for l in sys.stdin if l.strip()]; print(c)"`
+2. 根据事件分布决定下一步参数调整方向
 
 ## 系统评估
 - **策略有效性**：9/10
-  - 62轮迭代；全P0/P1已解决；风控层次完整且量化
-  - emergency_close 现可追踪，运维可观测性提升
-  - DRAWDOWN 备用值从12%降至6%，与动态值2-4%更匹配
+  - 63轮迭代；全P0/P1已解决；事件可观测性持续完善
+  - fill_entry现在携带regime，支持质量分析
+  - loss_streak事件链路补全（日志→jsonl）
 - **当前主要风险**：
   1. 外部API网络受限（沙盒），无实时市场监控
-  2. 实盘日志无法访问（所有优化均未经实盘数据验证）
-  3. 双向策略（long+short）在单边行情中可能同时亏损
-- **累计运行轮次**：62
+  2. 实盘日志为空，所有优化未经实盘数据验证
+  3. 双向策略在单边行情中可能同时亏损
+- **累计运行轮次**：63

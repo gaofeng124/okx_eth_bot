@@ -1,26 +1,23 @@
 {
-  "ran_at": "2026-04-30 05:00 UTC",
-  "eth_price": "N/A（沙盒环境，外部API不可用）",
+  "ran_at": "2026-04-30 06:00 UTC",
+  "eth_price": "N/A（网络受限）",
   "eth_24h_change_pct": "N/A",
-  "fear_greed_index": "N/A（API超时）",
+  "fear_greed_index": "N/A（网络受限）",
   "funding_rate": "N/A",
-  "market_summary": "外部API在沙盒环境不可用，无法获取实时市场数据。基于代码审查：P0/P1全部已修复（61轮迭代），系统处于成熟稳定状态。本轮聚焦代码层风险收缩与诊断可观测性提升。",
-  "decision": "第62轮：GRID_DRAWDOWN_FROM_PEAK_USDT locked 6.0→3.0（备用止损更严格），并在_emergency_close中添加record_analysis追踪紧急平仓事件",
-  "param_changes": [
-    {
-      "param": "GRID_DRAWDOWN_FROM_PEAK_USDT（_LOCKED_GRID备用值）",
-      "old": 6.0,
-      "new": 3.0,
-      "reason": "原6.0U=50U本金12%偏高；动态覆盖正常时=max(1.5,equity×4%)≈2U，但equity获取失败时会回退至locked值6.0。将备用上界降至3.0（6%），构成更紧密的风控层次：per_slot=0.8→peak_dd=3.0→whole_stop=5.0→daily_stop=6-8U"
-    }
-  ],
+  "market_summary": "外部API网络受限，无法获取实时行情。沙盒环境内进行代码级改进：提升fill_entry事件的诊断字段，增加loss_streak_triggered可观测性事件。",
+  "decision": "fill_entry事件新增regime/daily_pnl/grid_spacing_bps三字段；loss_streak触发时新增record_analysis事件，完善事件可观测性链路",
+  "param_changes": [],
   "code_changes": [
     {
       "file": "quant/strategy/grid_pro.py",
-      "summary": "_emergency_close 新增 record_analysis('emergency_close',...) 调用，将紧急平仓原因/mid/持仓/浮亏写入 analysis.jsonl，支持后续验证频率和原因分布"
+      "summary": "fill_entry record_analysis新增regime/daily_pnl_realized/grid_spacing_bps字段，支持按regime分析入场质量"
+    },
+    {
+      "file": "quant/strategy/grid_pro.py",
+      "summary": "loss_streak冷静期触发时新增loss_streak_triggered事件写入analysis.jsonl，记录mid/regime/recent_pnls/cooldown时间"
     }
   ],
-  "risk_notes": "外部API持续不可用导致无法实时监控市场；analysis.jsonl仅在实盘运行时生成，代码审查无法替代实盘数据验证。动态回撤限制(max(1.5,equity×4%))正常工作时已约束风险≤2U，3.0U备用值为额外保险。",
-  "next_focus": "round63：验证analysis.jsonl中emergency_close事件数量和原因分布；如有实盘日志，统计gate_blocked/fill_tp/fill_entry事件密度",
-  "round_number": "62"
+  "risk_notes": "外部API网络受限（沙盒），实盘日志为空，所有优化均为代码层面未经实盘验证",
+  "next_focus": "round64：若实盘日志可访问，统计loss_streak_triggered频率（期望<2次/天）；统计fill_entry按regime分布；若TRENDING_DOWN入场占比>20%说明regime过滤需加强",
+  "round_number": "63"
 }
