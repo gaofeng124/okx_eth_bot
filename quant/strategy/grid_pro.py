@@ -1293,7 +1293,9 @@ class GridProStrategy(TickStrategy):
         # ── 改进 3 (2026-04-22): 规模自适应波动 ──
         # 问题：sz=1.0 notional $240，per_slot_stop $0.8 = 0.33% 容忍
         #      但 ETH ATR 30bps + 冲高回落 50bps 常见 → 每次都击穿
-        # 规则：ATR > 35bps 缩 sz；ATR 越高缩越多
+        # 规则：ATR > 28bps 缩 sz；ATR 越高缩越多
+        # round69: 补充 28-35bps 中间档 sz=0.85（原来该区间无缩减，直接跳到 1.0→0.7）
+        # ETH ATR 28-35bps 是高频出现的"轻微偏高"状态，温和缩仓 15% 降低击穿概率。
         _atr_bps = self._vol.atr_short * 10000
         _sz_scale = 1.0
         if _atr_bps > 70:
@@ -1302,6 +1304,8 @@ class GridProStrategy(TickStrategy):
             _sz_scale = 0.5
         elif _atr_bps > 35:
             _sz_scale = 0.7
+        elif _atr_bps > 28:
+            _sz_scale = 0.85
         if _sz_scale < 1.0:
             log.info(
                 "[grid][atr-scale] ATR=%.1fbps 偏高，仓位缩 ×%.1f（防高波动击穿止损）",
@@ -2470,7 +2474,16 @@ class GridProStrategy(TickStrategy):
             # 2026-04-22 18:00 主人方案 A：回退到原保守值
             # 深度分析：止损已经及时，avg_loss $0.80 符合设定 → 不是问题
             # 真问题在 TP 侧（avg_win 被偷 80%），见 _maybe_trail_tp 修复
-            _SLOW_BLEED_AGING_SEC = 1800.0  # 30 分钟（原值）
+            # round69: 3档慢出血超时（与TP aging对齐）
+            # 逆势场景下 TP aging 已缩至 900s；但慢出血阈值 -0.30U < -0.50U（TP aging触发值），
+            # 意味着逆势+慢出血(-0.30U~-0.50U)可能在 TP aging(900s)之后仍持仓到1800s才触发。
+            # 改为：顺势1800s / RANGING1500s / 逆势1200s，与 TP aging 3档保持一致性。
+            if regime == favorable_trend:
+                _SLOW_BLEED_AGING_SEC = 1800.0   # 顺势：30min，给TP充足自然成交时间
+            elif regime == Regime.RANGING:
+                _SLOW_BLEED_AGING_SEC = 1500.0   # 振荡：25min，适当收紧
+            else:
+                _SLOW_BLEED_AGING_SEC = 1200.0   # 逆势：20min，与TP aging对齐快速止损
             _SLOW_BLEED_LOSS_USDT = 0.30    # $0.30（原值）
             if (
                 self._tp_placed_ts > 0
