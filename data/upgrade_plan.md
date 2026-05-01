@@ -1,83 +1,79 @@
 # ETH量化系统升级计划
 
-## 本次（2026-04-30 第六十六轮）完成
+## 本次（2026-05-01 第六十七轮）完成
 
-### grid_pro.py：修复 _market_close_all 中 loss_streak 会话粒度 bug
+### grid_pro.py：修复 _sync_tp 中 _recent_close_pnls 的 per-slot 粒度问题
 
 **问题（bug 描述）**：
-`_market_close_all` 在 `for s in held:` 循环内，对每个 slot 单独 append `net_after` 到 `_recent_close_pnls(maxlen=3)` 并立刻检查连亏条件。
+`_sync_tp`（TP 成交处理）在 `for s in self._slots:` 循环内，对每个 HOLDING slot 单独调用 `self._recent_close_pnls.append(net_after)`。
 
-当网格有 3 个 HOLDING slot 全部亏损时执行一次紧急平仓：
-- slot1 append(-x1) → 检查 → 不触发
-- slot2 append(-x2) → 检查：最后2个 [-x1, -x2] 均负 → **loss_streak 立即触发！**
-- slot3 append(-x3) → 检查：重复触发
-
-结果：**1次单一紧急平仓会话** 就触发30分钟冷静禁交期，相当于全天最多交易 24h/(0.5h wait + grid time) ≈ 严重限制交易机会。
+当网格有 3 个 HOLDING slot 同时 TP 成交时（全部为正收益）：
+- 3 次 append 占满 deque(maxlen=3)，完全覆盖了之前的 2 次紧急亏损记录
+- 从 loss_streak 角度看是"有利的"——但与 round66 修复的 _market_close_all 风格不一致
+- 若未来出现极端场景（TP 后某些 slot 小亏），per-slot 多次 append 可能误触发 loss_streak
 
 **修复**：
-- 引入 `session_net = 0.0`，循环中只累加，不 append 不检查
-- 循环结束后一次性 `append(session_net)` 并做 loss_streak 检查
-- 语义变为：**2次独立的紧急平仓会话均亏损** 才触发冷静期（正确行为）
+- 将 `self._recent_close_pnls.append(net_after)` 从 for 循环内移至循环后
+- 改为 `self._recent_close_pnls.append(total_net)`，整个 TP 会话只记录 1 次
+- 与 round66 的 _market_close_all 修复完全对称：两个平仓路径统一为 session 粒度
+
+### grid_pro.py：loss_streak 冷静期 1800s → 900s
+
+**理由**：
+- 每次触发冻结 30 分钟，若每日触发 3 次 = 90 分钟无法开新仓（6.25% 日内时间浪费）
+- 缩短至 900s（15 分钟）：每日 3 次触发 = 45 分钟损失，节省 45 分钟有效交易时间
+- 15 分钟足够平息大多数短期波动并让市场重新稳定
+- 配合 round66 的 session 粒度修复（现在需要 2 次独立会话才触发），实际触发频率已降低
 
 **效果预期**：
-- loss_streak 触发频率从 "任一3-slot亏损紧急平仓" → "2次独立亏损会话"
-- 每日有效交易时间显著提升（减少不必要的30分钟封锁）
-- 与 per_slot_stop=1.0U（round65）协同：既延长了单 slot 持仓时间，又降低了整体平仓的冷静代价
+- 极端行情下（频繁止损）每日多约 0.5~1.5 次网格机会
+- 与 per_slot_stop=1.0U + loss_streak 仅按会话触发协同，整体减少不必要的停机时间
 
 ---
 
 ## 历史完成（节选）
 
+### 第六十六轮（2026-04-30）
+- [x] grid_pro.py: _market_close_all 中 loss_streak 改为会话粒度（多 slot 单次紧急平仓只算1次事件）
+
 ### 第六十五轮（2026-04-30）
-- [x] settings.py: GRID_PER_SLOT_STOP_USDT 0.8 → 1.0，减少ATR正常范围(30bps)下的噪声止损触发
+- [x] settings.py: GRID_PER_SLOT_STOP_USDT 0.8 → 1.0
 
 ### 第六十四轮（2026-04-30）
-- [x] grid_pro.py: _place_grid 新增 record_analysis('grid_opened') 事件，完成网格会话事件链路
+- [x] grid_pro.py: _place_grid 新增 record_analysis('grid_opened') 事件
 
-### 第六十三轮（2026-04-30）
-- [x] grid_pro.py: fill_entry 新增 regime/daily_pnl_realized/grid_spacing_bps 三字段
-- [x] grid_pro.py: loss_streak_triggered 时写入 record_analysis
-
-### 第六十二轮（2026-04-30）
-- [x] settings.py: GRID_DRAWDOWN_FROM_PEAK_USDT locked 6.0 → 3.0
-- [x] grid_pro.py: _emergency_close 新增 record_analysis 追踪
-
-### 第一~六十一轮（2026-04-18~29）
+### 第一~六十三轮（2026-04-18~29）
 - [x] 全部P0/P1问题；WS重连；持仓同步；自适应TP；EWMA；FGI；资金费率；1h gate等
 
 ---
 
 ## 待解决问题（按优先级）
 
-- [ ] P2: round67：评估 loss_streak 冷静期 1800s 是否可缩短为 900s
-  - 当前：30分钟禁开新仓（已修复为按会话触发）
-  - 考量：若每日触发 2-3 次，900s×3 = 45min vs 1800s×3 = 90min 损失
-  - 条件：仅在有实盘数据验证触发频率后决定
+- [ ] P2: round68：检查 _TP_AGING_SEC(1800s) 和 _SLOW_BLEED_AGING_SEC(1800s)
+  - 这两个 1800s 是 TP 挂单存活时间（不是冷静期），不受 loss_streak 影响
+  - 但应确认是否应随市场节奏调整：RANGING 时 900s 是否更合适
+  - 条件：需先看实盘数据的 TP 成交时间分布
 
-- [ ] P2: round67：_sz_scale 中间档 ATR 28-35bps → sz=0.85
-  - 现状：<35bps 全部 sz=1.0；per_slot_stop=1.0U 已给足 42bps 缓冲
-  - 建议：暂缓，当实盘出现 ATR 30-35bps 频繁触发 per_slot_stop 时再加
+- [ ] P2: round68：_sz_scale 中间档 ATR 28-35bps → sz=0.85（待实盘验证后决定）
 
-- [ ] P2: round68：fill_tp 中 _recent_close_pnls.append 的粒度检查
-  - fill_tp 当前也是 per-slot append（循环内）
-  - 若 TP 单次命中多 slot，每个正收益 slot 单独 append，对 loss_streak 是有利的
-  - 但建议统一为 session 粒度（append 一次 total_net），风格一致
+- [ ] P2: round69：分析 analysis.jsonl 的实际写入情况
+  - 若 DATA_DIR 路径正确但文件仍为空，需检查 record_analysis 的 try/except 是否吞掉了异常
 
-- [ ] P3: 动态止盈 eff_tp_mult 灵敏度验证
+- [ ] P3: 动态止盈 eff_tp_mult 灵敏度验证（需实盘数据）
 
 ## 下次优先行动
 
-**round67：**
-1. 检查 fill_tp 的 _recent_close_pnls.append 是否也应改为 session 粒度（统一风格）
-2. 评估 loss_streak 冷静期：当前 1800s 是否可降至 900s 以提升交易密度
-3. 若仍无实盘日志，检查 analysis.jsonl 的写入路径配置是否正确
+**round68：**
+1. 检查 _TP_AGING_SEC 的 RANGING 值是否可从 1800s 降至 900s（减少长时间挂单占用保证金）
+2. 验证 record_analysis 在 try/except 内是否有未被捕获的路径问题
+3. 若获得市场数据，基于 FGI 和资金费率做 P2 动态参数调整
 
 ## 系统评估
 - **策略有效性**：9/10
-  - 66轮迭代；全P0/P1已解决；事件可观测性完整
-  - 最新修复：loss_streak 按会话粒度追踪，消除单次多slot平仓误触发30min冷静期
+  - 67轮迭代；全P0/P1已解决；两个平仓路径（TP+强平）均改为session粒度
+  - loss_streak 触发机制更合理：需2次独立亏损会话 + 15min冷静期（原30min）
 - **当前主要风险**：
   1. 实盘日志仍为空，所有优化依赖理论推导未经实盘数据验证
   2. 沙盒网络受限，无法实时获取市场数据
-  3. loss_streak 冷静期 1800s 对交易密度影响仍需实测
-- **累计运行轮次**：66
+  3. 900s 冷静期若过短，高波动行情中可能过早恢复开仓导致连续亏损
+- **累计运行轮次**：67

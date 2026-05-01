@@ -1073,9 +1073,9 @@ class GridProStrategy(TickStrategy):
         # 提前触发 loss_streak（原 bug：3 slot 同时亏 → slot2 append 后即触发冷静 30min）
         self._recent_close_pnls.append(session_net)
         if len(self._recent_close_pnls) >= 2 and all(p < 0 for p in list(self._recent_close_pnls)[-2:]):
-            self._loss_streak_until = time.time() + 1800.0  # 冷静 30min
+            self._loss_streak_until = time.time() + 900.0   # 冷静 15min（原30min；每日3次触发节省45min）
             log.warning(
-                "[grid][loss-streak] 连续 2 次紧急平仓会话亏损 → 冷静 30min 禁开新仓（至 %s）",
+                "[grid][loss-streak] 连续 2 次紧急平仓会话亏损 → 冷静 15min 禁开新仓（至 %s）",
                 datetime.fromtimestamp(self._loss_streak_until).strftime('%H:%M:%S'),
             )
             try:
@@ -1881,8 +1881,6 @@ class GridProStrategy(TickStrategy):
                     net_after = net - fee
                     total_net += net_after
                     self._pnl.add(net_after)
-                    # 2026-04-22 17:30 记录 TP 平仓 PnL 供连亏冷静 gate（TP 成交一般为正）
-                    self._recent_close_pnls.append(net_after)
                     self._tracker.record(
                         channel="grid",
                         pnl_pct=pnl_pct,
@@ -1890,6 +1888,8 @@ class GridProStrategy(TickStrategy):
                         contracts=s.fill_sz,
                         exit_reason="tp",
                     )
+            # 按会话粒度追踪连亏，与 _market_close_all 保持一致（单次 TP 命中多 slot 算 1 次事件）
+            self._recent_close_pnls.append(total_net)
             # 记录本次 TP 利润（格宽倍数 + 时间戳），按 Regime 分桶，供 EWMA 使用
             _ps: float | None = None
             if self._grid_spacing > 0 and self._vwap > 0:
