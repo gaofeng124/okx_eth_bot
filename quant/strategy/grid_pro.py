@@ -2434,11 +2434,16 @@ class GridProStrategy(TickStrategy):
             favorable_trend = (
                 Regime.TRENDING_DOWN if self._is_short else Regime.TRENDING_UP
             )
-            # 2026-04-22 18:00 主人方案 A：延长 TP aging 让 TP 自然成交
-            # 原 480/600s 被迫市价平（吃 taker fee 7bps vs maker 2bps，丢 ~5bps/笔）
-            # 新 1800s（30min）让 TP 有充足时间自然 fill maker 完成
-            # 依然保留破位 + 浮亏 > $0.5 两个硬条件防止死扛
-            _TP_AGING_SEC = 1800.0 if regime == favorable_trend else 1500.0
+            # round68: 3档 TP aging（顺势1800s / RANGING1200s / 逆势900s）
+            # 原2档：顺势1800s / 其他1500s — RANGING与逆势没有区分
+            # 逆势（如多头+TRENDING_DOWN）TP几乎不可能自然fill，900s快速止损与loss_streak冷静期对齐
+            # RANGING振荡环境1200s（20min）已足够等待一次完整波段，超时即重置网格中心
+            if regime == favorable_trend:
+                _TP_AGING_SEC = 1800.0
+            elif regime == Regime.RANGING:
+                _TP_AGING_SEC = 1200.0
+            else:
+                _TP_AGING_SEC = 900.0
             if self._is_short:
                 _tp_price_breach = self._vwap > 0 and mid > self._vwap * (1.0 + self._grid_spacing)
             else:

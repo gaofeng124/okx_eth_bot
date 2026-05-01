@@ -145,7 +145,8 @@ def _write(channel: str, event: str, payload: dict[str, Any]) -> None:
     }
     line = json.dumps(rec, ensure_ascii=False, default=str) + "\n"
     with _lock:
-        path.open("a", encoding="utf-8").write(line)
+        with path.open("a", encoding="utf-8") as _fh:
+            _fh.write(line)
 
 
 def _order_book_brief(ob: Any, max_levels: int = 5) -> dict[str, Any] | None:
