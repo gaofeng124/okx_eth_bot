@@ -520,6 +520,9 @@ class GridProStrategy(TickStrategy):
         # ATR 基线恢复（避免重启后冷启动期20次_place_grid调用无ATR联动）
         self._restore_atr_baseline()
 
+        # loss_streak 冷静期恢复（跨重启保持冷静期，防崩溃后立即重开亏损仓）
+        self._restore_loss_streak()
+
         # 关键风控配置一次性打印（便于日志核对）
         log.info(
             "[grid] 风控配置 direction=%s lev=%.1fx grid_levels=%d contracts_per_slot=%.3f "
@@ -1083,6 +1086,7 @@ class GridProStrategy(TickStrategy):
             else:
                 _ls_cd = 1200.0   # 逆势：20min，趋势对抗需更长等待
             self._loss_streak_until = time.time() + _ls_cd
+            self._save_loss_streak()
             log.warning(
                 "[grid][loss-streak] 连续2次亏损 → 冷静%.0fmin regime=%s（至 %s）",
                 _ls_cd / 60, self._current_regime.value,
@@ -1638,6 +1642,38 @@ class GridProStrategy(TickStrategy):
                 log.info("[grid] 恢复 atr_baseline=%.6f（%.1fh前保存），ATR联动立即可用", val, age_h)
         except Exception as e:
             log.warning("[grid] 恢复 atr_baseline 失败，忽略: %s", e)
+
+    def _save_loss_streak(self) -> None:
+        """重启后保留 loss_streak 冷静期 —— 防止崩溃重启立即清零冷静期重开仓。"""
+        import json as _json
+        try:
+            from pathlib import Path as _Path
+            p = _Path(self._data_dir) / "grid_loss_streak.json"
+            p.parent.mkdir(parents=True, exist_ok=True)
+            with p.open("w") as f:
+                _json.dump({"until": self._loss_streak_until, "saved_ts": time.time()}, f)
+        except Exception as e:
+            log.warning("[grid] 保存 loss_streak_until 失败，忽略: %s", e)
+
+    def _restore_loss_streak(self) -> None:
+        """启动时恢复 loss_streak_until（仍未到期则继续冷静期，已过期则忽略）。"""
+        import json as _json
+        try:
+            from pathlib import Path as _Path
+            p = _Path(self._data_dir) / "grid_loss_streak.json"
+            if not p.exists():
+                return
+            with p.open() as f:
+                data = _json.load(f)
+            until = float(data.get("until", 0.0))
+            if until > time.time():
+                self._loss_streak_until = until
+                remain_min = (until - time.time()) / 60
+                log.warning("[grid] 恢复 loss_streak 冷静期：剩余 %.1f min（跨重启保护）", remain_min)
+            else:
+                p.unlink(missing_ok=True)
+        except Exception as e:
+            log.warning("[grid] 恢复 loss_streak_until 失败，忽略: %s", e)
 
     def _adaptive_trail_trigger(self, base_trigger: float, is_ranging: bool) -> float:
         """根据近期TP成交利润（格宽倍数，EWMA加权）动态调整追踪触发门槛。

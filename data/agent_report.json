@@ -1,23 +1,19 @@
 {
-  "ran_at": "2026-05-01 03:00 UTC",
-  "eth_price": "N/A (沙盒网络限制)",
+  "ran_at": "2026-05-01 04:00 UTC",
+  "eth_price": "N/A (沙盒网络受限)",
   "eth_24h_change_pct": "N/A",
-  "fear_greed_index": "N/A (沙盒网络限制)",
+  "fear_greed_index": "N/A (API不可达)",
   "funding_rate": "N/A",
-  "market_summary": "沙盒环境无法访问外部API，无法获取实时市场数据。系统参数正常，strategy settings检查通过。analysis.jsonl日志目录仍为空（实盘尚未产生数据），round68文件句柄修复效果待验证。",
-  "decision": "改进2项：①_sz_scale日志补充4档标签(28-35/35-50/50-70/>70bps)便于统计触发频率；②loss_streak冷静期按regime差异化（顺势600s/RANGING900s/逆势1200s）",
+  "market_summary": "沙盒环境外网受限，无法获取实时行情。策略参数稳定：GRID_DAILY_TARGET=999U（无上限）、GRID_DRAWDOWN=2.0U、BOT无会话限制。基于上轮（round70）3档loss_streak冷静期的改进，本轮聚焦提升重启鲁棒性。",
+  "decision": "新增 _save_loss_streak/_restore_loss_streak：loss_streak冷静期现在持久化到 data/grid_loss_streak.json，重启后仍有效，防止崩溃后立即重开亏损仓",
   "param_changes": [],
   "code_changes": [
     {
       "file": "quant/strategy/grid_pro.py",
-      "summary": "_sz_scale日志：添加_sz_tier档位标签，区分28-35/35-50/50-70/>70bps，便于统计各ATR区间触发频率"
-    },
-    {
-      "file": "quant/strategy/grid_pro.py",
-      "summary": "loss_streak冷静期regime差异化：顺势600s（快速恢复抓趋势）/RANGING900s（原值）/逆势1200s（趋势对抗多等待）"
+      "summary": "新增_save_loss_streak和_restore_loss_streak方法（仿atr_baseline模式），将loss_streak_until持久化到grid_loss_streak.json；在触发冷静期时保存、在__init__启动时恢复"
     }
   ],
-  "risk_notes": "analysis.jsonl日志目录仍为空，所有优化均基于逻辑推导而非实盘数据验证，存在参数设计与实盘偏差风险",
-  "next_focus": "round71：①验证loss_streak 3档冷静期效果；②RANGING振荡下顺势loss_streak600s是否过短（需实盘止损频率数据）；③检查data/logs目录是否正确初始化",
-  "round_number": "70"
+  "risk_notes": "实盘日志仍为空（data/logs/daily不存在），优化均基于理论推导未经实盘验证；loss_streak 600s顺势冷静期偏短风险仍存在",
+  "next_focus": "round72：检查grid_loss_streak.json是否在实盘中正确生成；分析_sz_scale各档位触发频率（需实盘日志积累）",
+  "round_number": 71
 }
