@@ -1,19 +1,23 @@
 {
-  "ran_at": "2026-05-01 02:00 UTC",
-  "eth_price": "N/A (网络受限)",
+  "ran_at": "2026-05-01 03:00 UTC",
+  "eth_price": "N/A (沙盒网络限制)",
   "eth_24h_change_pct": "N/A",
-  "fear_greed_index": "N/A (网络受限)",
+  "fear_greed_index": "N/A (沙盒网络限制)",
   "funding_rate": "N/A",
-  "market_summary": "沙盒网络受限，无法获取实时行情。历史背景：系统68轮迭代，全P0/P1问题已解决。当前主要优化方向为止损精细化与仓位管理。",
-  "decision": "改进2项：①_SLOW_BLEED_AGING_SEC从固定1800s升级为3档regime差异化（顺势1800s/RANGING1500s/逆势1200s）；②_sz_scale补充28-35bps中间档sz=0.85",
+  "market_summary": "沙盒环境无法访问外部API，无法获取实时市场数据。系统参数正常，strategy settings检查通过。analysis.jsonl日志目录仍为空（实盘尚未产生数据），round68文件句柄修复效果待验证。",
+  "decision": "改进2项：①_sz_scale日志补充4档标签(28-35/35-50/50-70/>70bps)便于统计触发频率；②loss_streak冷静期按regime差异化（顺势600s/RANGING900s/逆势1200s）",
   "param_changes": [],
   "code_changes": [
     {
       "file": "quant/strategy/grid_pro.py",
-      "summary": "_SLOW_BLEED_AGING_SEC 3档regime差异化：顺势1800s/RANGING1500s/逆势1200s，与TP aging对齐；_sz_scale补充28-35bps中间档sz=0.85"
+      "summary": "_sz_scale日志：添加_sz_tier档位标签，区分28-35/35-50/50-70/>70bps，便于统计各ATR区间触发频率"
+    },
+    {
+      "file": "quant/strategy/grid_pro.py",
+      "summary": "loss_streak冷静期regime差异化：顺势600s（快速恢复抓趋势）/RANGING900s（原值）/逆势1200s（趋势对抗多等待）"
     }
   ],
-  "risk_notes": "逆势1200s慢出血超时可能在市场快速反转时提前止损；但与TP aging 900s逻辑一致，逆势场景本身就需快速止损。28-35bps中间档缩仓15%理论上对盈利影响可忽略。",
-  "next_focus": "round70：(1)验证_SLOW_BLEED_AGING_SEC差异化效果；(2)考虑_sz_scale日志上报改进（区分哪档触发）；(3)评估RANGING振荡下loss_streak冷静期是否也需差异化",
-  "round_number": "69"
+  "risk_notes": "analysis.jsonl日志目录仍为空，所有优化均基于逻辑推导而非实盘数据验证，存在参数设计与实盘偏差风险",
+  "next_focus": "round71：①验证loss_streak 3档冷静期效果；②RANGING振荡下顺势loss_streak600s是否过短（需实盘止损频率数据）；③检查data/logs目录是否正确初始化",
+  "round_number": "70"
 }

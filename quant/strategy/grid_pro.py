@@ -1073,9 +1073,19 @@ class GridProStrategy(TickStrategy):
         # 提前触发 loss_streak（原 bug：3 slot 同时亏 → slot2 append 后即触发冷静 30min）
         self._recent_close_pnls.append(session_net)
         if len(self._recent_close_pnls) >= 2 and all(p < 0 for p in list(self._recent_close_pnls)[-2:]):
-            self._loss_streak_until = time.time() + 900.0   # 冷静 15min（原30min；每日3次触发节省45min）
+            # round70: regime差异化冷静期（顺势600s/RANGING900s/逆势1200s）
+            # 顺势亏损=临时回调，快速恢复可抓趋势；逆势亏损=趋势对抗，等更久避免重复止损
+            _favorable_r = Regime.TRENDING_DOWN if self._is_short else Regime.TRENDING_UP
+            if self._current_regime == _favorable_r:
+                _ls_cd = 600.0    # 顺势：10min，短暂等待后快速恢复
+            elif self._current_regime == Regime.RANGING:
+                _ls_cd = 900.0    # 振荡：15min，标准冷静期（原值不变）
+            else:
+                _ls_cd = 1200.0   # 逆势：20min，趋势对抗需更长等待
+            self._loss_streak_until = time.time() + _ls_cd
             log.warning(
-                "[grid][loss-streak] 连续 2 次紧急平仓会话亏损 → 冷静 15min 禁开新仓（至 %s）",
+                "[grid][loss-streak] 连续2次亏损 → 冷静%.0fmin regime=%s（至 %s）",
+                _ls_cd / 60, self._current_regime.value,
                 datetime.fromtimestamp(self._loss_streak_until).strftime('%H:%M:%S'),
             )
             try:
@@ -1086,6 +1096,7 @@ class GridProStrategy(TickStrategy):
                     regime=self._current_regime.value,
                     recent_pnls=list(self._recent_close_pnls),
                     session_net=round(session_net, 4),
+                    cooldown_sec=_ls_cd,
                     cooldown_until=datetime.fromtimestamp(self._loss_streak_until).strftime('%H:%M:%S'),
                     daily_pnl_realized=round(self._pnl.realized, 4),
                 )
@@ -1307,9 +1318,18 @@ class GridProStrategy(TickStrategy):
         elif _atr_bps > 28:
             _sz_scale = 0.85
         if _sz_scale < 1.0:
+            # round70: 补充档位标签，便于统计各ATR区间触发频率
+            if _atr_bps > 70:
+                _sz_tier = ">70bps"
+            elif _atr_bps > 50:
+                _sz_tier = "50-70bps"
+            elif _atr_bps > 35:
+                _sz_tier = "35-50bps"
+            else:
+                _sz_tier = "28-35bps"
             log.info(
-                "[grid][atr-scale] ATR=%.1fbps 偏高，仓位缩 ×%.1f（防高波动击穿止损）",
-                _atr_bps, _sz_scale,
+                "[grid][atr-scale] ATR=%.1fbps[%s] 仓位缩 ×%.2f（防高波动击穿止损）",
+                _atr_bps, _sz_tier, _sz_scale,
             )
         # 动态调整 slots 的 contracts（仅对 EMPTY 的 slot 生效，不动 HOLDING）
         _effective_contracts = self._contracts_per_slot * _sz_scale
