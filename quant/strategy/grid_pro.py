@@ -2086,23 +2086,31 @@ class GridProStrategy(TickStrategy):
                     delta_pct,
                 )
                 import subprocess
+                from pathlib import Path as _Path
+                _root = _Path(self._data_dir).parent
+                _env_path = str(_root / ".env")
                 subprocess.run(
-                    ["sed", "-i.tmp",
+                    ["sed", "-i.bak",
                      "s/^GRID_LEVELS=.*/GRID_LEVELS=5/",
-                     "/root/okx_eth_bot/.env"],
+                     _env_path],
                     check=False,
                 )
                 subprocess.run(
-                    ["rm", "-f", "/root/okx_eth_bot/.env.tmp"],
+                    ["rm", "-f", f"{_env_path}.bak"],
                     check=False,
                 )
                 # 移除 phase4 标记，记录降级时间
+                _data = _Path(self._data_dir)
                 subprocess.run(
-                    ["rm", "-f", "/root/okx_eth_bot/data/.phase4_applied"],
+                    ["rm", "-f", str(_data / ".phase4_applied")],
                     check=False,
                 )
-                with open("/root/okx_eth_bot/data/.p4_downgraded", "w") as f:
-                    f.write(f"降级时间 {time.strftime('%Y-%m-%d %H:%M:%S')} delta_4h={delta_pct:.2f}%")
+                try:
+                    (_data / ".p4_downgraded").write_text(
+                        f"降级时间 {time.strftime('%Y-%m-%d %H:%M:%S')} delta_4h={delta_pct:.2f}%"
+                    )
+                except Exception:
+                    pass
                 # 触发 watchdog 重启
                 subprocess.run(["pkill", "-f", "run_strategy.py"], check=False)
         except Exception as e:
