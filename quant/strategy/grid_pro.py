@@ -501,6 +501,8 @@ class GridProStrategy(TickStrategy):
         # 主人："加注赔钱金额大" → 连 2 亏不加仓，30min 冷静
         self._loss_streak_until: float = 0.0  # 冷静期结束时间
         self._recent_close_pnls: deque[float] = deque(maxlen=3)  # 近 3 笔平仓 PnL
+        self._last_sz_scale: float = 1.0          # 最近一次开仓的仓位缩减系数（离线分析用）
+        self._last_gridstate_snap_ts: float = 0.0  # 5分钟 grid_state 快照节流时间戳
 
         # Phase 4 趋势日守卫（主人 2026-04-21 22:15 批准 B 激进版时要求）
         # 每 10min 评估近 4h K 线 delta：若 |delta| > 1.5% → 自动降回 Phase 3
@@ -1335,6 +1337,7 @@ class GridProStrategy(TickStrategy):
                 "[grid][atr-scale] ATR=%.1fbps[%s] 仓位缩 ×%.2f（防高波动击穿止损）",
                 _atr_bps, _sz_tier, _sz_scale,
             )
+        self._last_sz_scale = _sz_scale  # 供 status_summary / grid_state 快照使用
         # 动态调整 slots 的 contracts（仅对 EMPTY 的 slot 生效，不动 HOLDING）
         _effective_contracts = self._contracts_per_slot * _sz_scale
         for s in self._slots:
@@ -2288,6 +2291,34 @@ class GridProStrategy(TickStrategy):
                 session_tracker=session,
                 status_summary=self.status_summary(),
             )
+
+            # 5分钟间隔的 grid_state 深度快照：regime 分布 + ATR 趋势 + sz_scale
+            _GRIDSTATE_SNAP_INTERVAL = 300.0
+            if now - self._last_gridstate_snap_ts >= _GRIDSTATE_SNAP_INTERVAL:
+                self._last_gridstate_snap_ts = now
+                record_analysis(
+                    "grid_state_snapshot",
+                    mid=mid,
+                    unrealized_usdt=unrealized,
+                    regime_stats=self._regime.stats_summary(),
+                    atr_short_bps=round(self._vol.atr_short * 10000, 2),
+                    atr_medium_bps=round(self._vol.atr_medium * 10000, 2),
+                    atr_baseline_bps=round(self._atr_baseline * 10000, 2),
+                    sz_scale_last=self._last_sz_scale,
+                    loss_streak_active=self._loss_streak_until > now,
+                    loss_streak_until_iso=(
+                        datetime.fromtimestamp(self._loss_streak_until).strftime('%H:%M:%S')
+                        if self._loss_streak_until > now else None
+                    ),
+                    slot_hold_durations_sec={
+                        s.level: round(now - s.fill_ts, 1)
+                        for s in self._slots
+                        if s.state == _S.HOLDING and s.fill_ts > 0
+                    },
+                    tp_profits_ranging_n=len(self._tp_profits_ranging),
+                    tp_profits_trending_n=len(self._tp_profits_trending),
+                    ewma_tp_mult=round(self._last_eff_tp_mult, 3),
+                )
         except Exception:
             pass
 
@@ -2961,20 +2992,31 @@ class GridProStrategy(TickStrategy):
     # ══════════════════════════════════════════════════════════════════════════
 
     def status_summary(self) -> dict[str, Any]:
+        now = time.time()
         held = {s.level: {"fill": s.fill_price, "sz": s.fill_sz}
                 for s in self._slots if s.state == _S.HOLDING}
         live = [s.level for s in self._slots if s.state == _S.ENTRY_LIVE]
+        # 各 HOLDING 槽位持仓时长（秒），用于发现异常长持仓
+        hold_durations = {
+            s.level: round(now - s.fill_ts, 1)
+            for s in self._slots
+            if s.state == _S.HOLDING and s.fill_ts > 0
+        }
+        _ls_active = self._loss_streak_until > now
         return {
             "regime":        self._regime.current.value,
             "vol_regime":    self._vol.vol_regime,
             "atr_short_bps": round(self._vol.atr_short * 10000, 2),
             "atr_medium_bps": round(self._vol.atr_medium * 10000, 2),
+            "atr_baseline_bps": round(self._atr_baseline * 10000, 2),
+            "sz_scale_last": self._last_sz_scale,
             "grid_active":   self._grid_active,
             "grid_center":   round(self._grid_center, 2),
             "grid_spacing_bps": round(self._grid_spacing * 10000, 2),
             "active_levels": self._active_levels,
             "slots_live":    live,
             "slots_holding": held,
+            "slot_hold_durations_sec": hold_durations,
             "total_held":    self._total_held,
             "vwap":          round(self._vwap, 2),
             "tp_price":      round(self._tp_price, 2),
@@ -2982,10 +3024,14 @@ class GridProStrategy(TickStrategy):
             "liq_price":     round(self._liq_price(), 2),
             "daily_pnl":     round(self._pnl.realized, 4),
             "profit_protect": self._pnl.profit_protect_mode(),
+            "loss_streak_active": _ls_active,
+            "loss_streak_until_iso": (
+                datetime.fromtimestamp(self._loss_streak_until).strftime('%H:%M:%S')
+                if _ls_active else None
+            ),
             "funding_rate":  self._funding_rate,
             "book_imb_ema":  round(self._ema_book_imb.value or 0.0, 3),
             "fgi":           self._fear_greed_index,
-            "atr_baseline_bps": round(self._atr_baseline * 10000, 2),
             "eff_tp_mult":   round(self._last_eff_tp_mult, 3),
             "grid_bias":     self._grid_bias,
             "session":       self._tracker.session_summary(),

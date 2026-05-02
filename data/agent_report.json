@@ -1,19 +1,19 @@
 {
-  "ran_at": "2026-05-02 15:30 UTC",
-  "eth_price": "N/A (沙盒网络不可用)",
+  "ran_at": "2026-05-02 16:30 UTC",
+  "eth_price": "N/A (网络受限，无法访问OKX API)",
   "eth_24h_change_pct": "N/A",
-  "fear_greed_index": "N/A (获取失败)",
-  "funding_rate": "N/A (网络不可用)",
-  "market_summary": "沙盒环境无网络，无法获取实时市场数据。基于代码审查进行本轮优化。系统已运行73轮，持续迭代优化中。",
-  "decision": "修复 grid_pro.py _check_phase4_trend_guard 中5处硬编码 /root/okx_eth_bot/ 路径 → 改用 Path(self._data_dir) 动态推导，彻底消除 phase4 降级功能在当前 /home/user/okx_eth_bot/ 部署下的静默失效问题",
+  "fear_greed_index": "N/A (网络受限)",
+  "funding_rate": "N/A",
+  "market_summary": "沙盒网络受限，无法获取实时行情。系统处于第74轮迭代，前73轮P0/P1问题均已修复，本轮专注P2级别分析能力增强。",
+  "decision": "丰富 status_summary() 增加 sz_scale_last/loss_streak状态/slot持仓时长，并在 _log_status 新增5分钟间隔 grid_state_snapshot 深度快照（含 regime 分布统计）",
   "param_changes": [],
   "code_changes": [
     {
       "file": "quant/strategy/grid_pro.py",
-      "summary": "_check_phase4_trend_guard: 将 /root/okx_eth_bot/.env、/root/okx_eth_bot/data/.phase4_applied、.p4_downgraded 等5处绝对路径改为 Path(self._data_dir).parent / 相对路径，-i.tmp 改为 -i.bak 避免BSD sed兼容问题"
+      "summary": "1) __init__ 新增 _last_sz_scale/_ last_gridstate_snap_ts 实例变量；2) _open_slot 计算 _sz_scale 后存入 self._last_sz_scale；3) status_summary() 补充 sz_scale_last/loss_streak_active/loss_streak_until_iso/slot_hold_durations_sec；4) _log_status 新增每5分钟一次 grid_state_snapshot 事件（含 regime 分布、ATR趋势、sz_scale、loss_streak 等）"
     }
   ],
-  "risk_notes": "沙盒网络不可用导致市场数据无法采集；phase4 guard 虽默认关闭，但启用时原路径指向 /root/ 会静默失败不降级，现已修复",
-  "next_focus": "round74: 若网络可用验证实盘日志已写入 data/logs/daily/ (DATA_DIR修复效果); 考虑周期性 grid_state 快照写入 analysis.jsonl 提升可观测性",
-  "round_number": 73
+  "risk_notes": "data/logs/daily/ 目录未生成（机器人未运行），无法验证实际成交效果。GRID_LEVELS=3 + GRID_CONTRACTS_PER_SLOT 锁定配置下，phase4 guard 的 +1 level 逻辑无实际效果。",
+  "next_focus": "round75：检查服务实际运行状态（systemctl status okx-eth-bot），若有 analysis.jsonl 积累则分析 sz_scale 各档位触发频率和 regime 分布",
+  "round_number": 74
 }
