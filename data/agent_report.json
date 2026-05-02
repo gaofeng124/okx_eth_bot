@@ -1,19 +1,19 @@
 {
-  "ran_at": "2026-05-01 04:00 UTC",
-  "eth_price": "N/A (沙盒网络受限)",
+  "ran_at": "2026-05-02 14:30 UTC",
+  "eth_price": "N/A (网络受限)",
   "eth_24h_change_pct": "N/A",
-  "fear_greed_index": "N/A (API不可达)",
+  "fear_greed_index": "N/A (获取失败)",
   "funding_rate": "N/A",
-  "market_summary": "沙盒环境外网受限，无法获取实时行情。策略参数稳定：GRID_DAILY_TARGET=999U（无上限）、GRID_DRAWDOWN=2.0U、BOT无会话限制。基于上轮（round70）3档loss_streak冷静期的改进，本轮聚焦提升重启鲁棒性。",
-  "decision": "新增 _save_loss_streak/_restore_loss_streak：loss_streak冷静期现在持久化到 data/grid_loss_streak.json，重启后仍有效，防止崩溃后立即重开亏损仓",
+  "market_summary": "沙盒网络受限，外部API不可用。重点转向代码质量审查：发现并修复了DATA_DIR重复定义导致的日志路径错误Bug。",
+  "decision": "修复 settings.py 中 DATA_DIR 重复定义Bug：删除第928行相对路径 './data'，保留第574行绝对路径，彻底解决 systemd 服务日志写入错误目录的问题",
   "param_changes": [],
   "code_changes": [
     {
-      "file": "quant/strategy/grid_pro.py",
-      "summary": "新增_save_loss_streak和_restore_loss_streak方法（仿atr_baseline模式），将loss_streak_until持久化到grid_loss_streak.json；在触发冷静期时保存、在__init__启动时恢复"
+      "file": "quant/settings.py",
+      "summary": "删除第928行重复的 DATA_DIR = _es('DATA_DIR', './data')，该相对路径在 systemd 服务中会指向错误目录，导致 data/logs/daily 从未在预期位置创建"
     }
   ],
-  "risk_notes": "实盘日志仍为空（data/logs/daily不存在），优化均基于理论推导未经实盘验证；loss_streak 600s顺势冷静期偏短风险仍存在",
-  "next_focus": "round72：检查grid_loss_streak.json是否在实盘中正确生成；分析_sz_scale各档位触发频率（需实盘日志积累）",
-  "round_number": 71
+  "risk_notes": "修复后 data/logs/daily 目录应在首次 init_session 调用时自动创建于 /home/user/okx_eth_bot/data/logs/daily/；若 bot 仍未运行则日志仍为空（代码本身已正确）",
+  "next_focus": "round73：验证 bot 实际运行状态（systemd status），确认 data/logs/daily 是否在新一轮启动后正常生成",
+  "round_number": "72"
 }
