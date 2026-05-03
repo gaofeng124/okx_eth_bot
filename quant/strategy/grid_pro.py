@@ -1983,10 +1983,41 @@ class GridProStrategy(TickStrategy):
             self._reset_grid()
 
         elif state in ("canceled", "partially_canceled"):
-            # TP 部分成交后被撤：调整剩余持仓的 TP
-            if fill_sz > 0:
+            # TP 部分成交后被撤：记录已成交部分收益 + 按比例缩减 slot fill_sz + 重挂剩余 TP
+            if fill_sz > 0 and self._total_held > 0:
+                # 按比例计算已成交份额对应的收益（round75 bug fix: 旧代码缺失此步导致 PnL 漏记
+                # 且后续完整 TP 成交时会用原始 fill_sz 重算，造成 PnL 双算）
+                fill_ratio = fill_sz / self._total_held
+                partial_net = 0.0
+                sign = self._pnl_sign()
+                for s in self._slots:
+                    if s.state == _S.HOLDING and s.fill_sz > 0:
+                        slot_filled = s.fill_sz * fill_ratio
+                        net = (fill_px - s.fill_price) * slot_filled * self._ct_val * sign
+                        fee = self._roundtrip_fee(slot_filled, fill_px)
+                        net_after = net - fee
+                        partial_net += net_after
+                        self._pnl.add(net_after)
+                        s.fill_sz = max(0.0, s.fill_sz - slot_filled)
+                self._recent_close_pnls.append(partial_net)
                 remaining = self._total_held - fill_sz
-                log.warning("[grid] TP 部分成交 filled=%.1f remaining=%.1f，重新挂单", fill_sz, remaining)
+                log.warning(
+                    "[grid] TP 部分成交 @%.2f filled=%.3f pnl=%.4fU remaining=%.3f，重新挂单",
+                    fill_px, fill_sz, partial_net, remaining,
+                )
+                try:
+                    from quant.detailed_daily_log import record_analysis
+                    record_analysis(
+                        "fill_tp_partial",
+                        fill_price=fill_px,
+                        fill_sz=fill_sz,
+                        net_pnl_usdt=partial_net,
+                        daily_pnl_realized=self._pnl.realized,
+                        remaining=remaining,
+                        regime=self._current_regime.value,
+                    )
+                except Exception:
+                    pass
                 self._total_held = max(0.0, remaining)
                 self._vwap_value = self._vwap * self._total_held
             self._tp_order_id = ""
