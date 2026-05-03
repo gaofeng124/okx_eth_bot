@@ -1,19 +1,19 @@
 {
-  "ran_at": "2026-05-03 06:00 UTC",
+  "ran_at": "2026-05-03 07:00 UTC",
   "eth_price": "N/A (网络受限)",
   "eth_24h_change_pct": "N/A",
   "fear_greed_index": "N/A (网络受限)",
   "funding_rate": "N/A",
-  "market_summary": "沙盒环境网络受限，无法获取实时市场数据。上轮(round75)已完成 partial TP cancel PnL 双算修复。本轮聚焦 _cancel_order sCode 检查问题——系已知P1缺陷，影响订单状态一致性。",
-  "decision": "修复 _cancel_order：检查 OKX resp data[0].sCode，sCode非零时返回False（51401=订单不存在则视为成功），防止误认撤单成功导致后续状态错乱",
+  "market_summary": "沙盒网络受限，无法获取实时行情。上轮修复了 _cancel_order sCode检查；本轮聚焦紧急平仓路径孤儿仓位问题，这是比市场状态更关键的结构性风险。",
+  "decision": "修复 _emergency_close 取消入场单后未检查成交状态 + 修复 _reset_grid 孤儿仓检测仅依赖 False 返回（51401=已成交会返回True）且不采取实际动作的双重缺陷",
   "param_changes": [],
   "code_changes": [
     {
       "file": "quant/strategy/grid_pro.py",
-      "summary": "_cancel_order 增加 sCode 检查：解析 resp data[0].sCode，非零时 warning+返回False；特殊处理 51401（订单不存在=成功），修复原来只捕获HTTP异常忽略OKX业务错误的漏洞"
+      "summary": "_emergency_close：取消入场单后对每个oid调用_query_order，若已成交则恢复slot为HOLDING，使_market_close_all能正确关闭；_reset_grid：始终查询（不只在cancel失败时），发现孤儿仓直接发起市价平仓而非仅打日志"
     }
   ],
-  "risk_notes": "沙盒网络隔离，无法验证实盘订单撤销是否真实触发sCode非零场景；_reset_grid 依赖 _cancel_order 返回值做错误处理，此修复提升状态一致性",
-  "next_focus": "round77: 审查 _reset_grid 中 _cancel_order 失败路径的处理逻辑，确认返回 False 时是否有适当的重试或状态标记，防止脏槽位堆积",
-  "round_number": 76
+  "risk_notes": "仍在沙盒中，无法验证实盘效果。孤儿仓修复可消除极端行情下快速成交+触发止损时的幽灵持仓风险。",
+  "next_focus": "round78: 审查 _sync_tp partially_canceled 分支在 _reset_grid 调用链中的完整性；检查 analysis.jsonl 是否有 emergency_close 事件频率异常",
+  "round_number": "77"
 }

@@ -1140,12 +1140,35 @@ class GridProStrategy(TickStrategy):
         except Exception:
             pass
 
-        # 取消所有入场单
+        # 取消所有入场单；保存 oid 用于后续成交检查
+        _cancelled_entry: list[tuple[GridSlot, str]] = []
         for s in self._slots:
             if s.state == _S.ENTRY_LIVE and s.entry_order_id:
+                _cancelled_entry.append((s, s.entry_order_id))
                 self._cancel_order(s.entry_order_id)
                 s.state = _S.EMPTY
                 s.entry_order_id = ""
+
+        # 取消后查询订单状态：防止入场单在撤单窗口内成交后成为孤儿仓位
+        # （_cancel_order 对 51401=订单不存在返回 True，无法区分"已撤"与"已成交"）
+        _now_ec = time.time()
+        for _s, _oid in _cancelled_entry:
+            _ord = self._query_order(_oid)
+            _fill_sz = float(_ord.get("fillSz") or 0.0)
+            if str(_ord.get("state", "")) in ("filled", "partially_canceled") and _fill_sz > 0:
+                _fill_px = float(_ord.get("avgPx") or _ord.get("fillPx") or _s.target_price)
+                _s.fill_price     = _fill_px
+                _s.fill_sz        = _fill_sz
+                _s.fill_ts        = _now_ec
+                _s.state          = _S.HOLDING
+                _s.entry_order_id = ""
+                self._vwap_value += _fill_px * _fill_sz
+                self._total_held += _fill_sz
+                self._vwap = self._vwap_value / self._total_held
+                log.warning(
+                    "[grid] 紧急平仓: L%d 入场单已成交 @%.2f sz=%.1f — 追加HOLDING待市价平仓",
+                    _s.level, _fill_px, _fill_sz,
+                )
 
         # 取消 TP 单
         if self._tp_order_id:
@@ -1180,20 +1203,31 @@ class GridProStrategy(TickStrategy):
     # ══════════════════════════════════════════════════════════════════════════
 
     def _reset_grid(self) -> None:
-        # Cancel any pending entry orders BEFORE clearing state (orphan prevention)
+        # Cancel pending entry orders; query each to catch fills during cancel window.
+        # _cancel_order returns True for sCode=51401 (order not found = may be filled),
+        # so we cannot rely on False-return alone to detect orphans.
         for s in self._slots:
             if s.state == _S.ENTRY_LIVE and s.entry_order_id:
-                if not self._cancel_order(s.entry_order_id):
-                    # Cancel failed — order may already be filled; check and handle
-                    order = self._query_order(s.entry_order_id)
-                    o_state = str(order.get("state", ""))
-                    fill_sz = float(order.get("fillSz") or 0.0)
-                    if o_state == "filled" and fill_sz > 0:
-                        fill_px = float(order.get("avgPx") or order.get("fillPx") or 0)
-                        log.warning(
-                            "[grid] _reset_grid: L%d 入场单已成交 @%.2f sz=%.1f — 需要手动处理或等待reconcile",
-                            s.level, fill_px, fill_sz,
-                        )
+                self._cancel_order(s.entry_order_id)
+                order = self._query_order(s.entry_order_id)
+                fill_sz = float(order.get("fillSz") or 0.0)
+                if str(order.get("state", "")) in ("filled", "partially_canceled") and fill_sz > 0:
+                    fill_px = float(order.get("avgPx") or order.get("fillPx") or s.target_price)
+                    log.warning(
+                        "[grid] _reset_grid: L%d 孤儿仓 sz=%.1f @%.2f — 尝试市价平仓",
+                        s.level, fill_sz, fill_px,
+                    )
+                    try:
+                        self._rest.request("POST", "/api/v5/trade/order", {
+                            "instId": self._inst_id,
+                            "tdMode": self._td_mode,
+                            "side": self._exit_api_side(),
+                            "ordType": "market",
+                            "sz": self._sz(fill_sz),
+                            "reduceOnly": True,
+                        })
+                    except Exception as _e:
+                        log.error("[grid] _reset_grid: 孤儿仓市价平仓失败: %s", _e)
         for s in self._slots:
             s.state = _S.EMPTY
             s.entry_order_id = ""
