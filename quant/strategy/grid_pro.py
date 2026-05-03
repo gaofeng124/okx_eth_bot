@@ -1226,6 +1226,17 @@ class GridProStrategy(TickStrategy):
                             "sz": self._sz(fill_sz),
                             "reduceOnly": True,
                         })
+                        try:
+                            from quant.detailed_daily_log import record_analysis
+                            record_analysis(
+                                "orphan_close",
+                                level=s.level,
+                                fill_sz=fill_sz,
+                                fill_px=fill_px,
+                                daily_pnl_realized=round(self._pnl.realized, 4),
+                            )
+                        except Exception:
+                            pass
                     except Exception as _e:
                         log.error("[grid] _reset_grid: 孤儿仓市价平仓失败: %s", _e)
         for s in self._slots:
@@ -1235,6 +1246,11 @@ class GridProStrategy(TickStrategy):
             s.fill_sz    = 0.0
             s.fail_count = 0
             s.retry_after_ts = 0.0
+        # Cancel TP if still live before clearing state.
+        # Fixes ghost-position reset path (line ~2300) where caller skips TP cancel.
+        # _cancel_order treats 51401 (already filled/cancelled) as success → safe for all paths.
+        if self._tp_order_id:
+            self._cancel_order(self._tp_order_id)
         self._tp_order_id  = ""
         self._tp_price     = 0.0
         self._tp_placed_ts = 0.0

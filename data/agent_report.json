@@ -1,19 +1,19 @@
 {
-  "ran_at": "2026-05-03 07:00 UTC",
+  "ran_at": "2026-05-03 08:00 UTC",
   "eth_price": "N/A (网络受限)",
   "eth_24h_change_pct": "N/A",
   "fear_greed_index": "N/A (网络受限)",
   "funding_rate": "N/A",
-  "market_summary": "沙盒网络受限，无法获取实时行情。上轮修复了 _cancel_order sCode检查；本轮聚焦紧急平仓路径孤儿仓位问题，这是比市场状态更关键的结构性风险。",
-  "decision": "修复 _emergency_close 取消入场单后未检查成交状态 + 修复 _reset_grid 孤儿仓检测仅依赖 False 返回（51401=已成交会返回True）且不采取实际动作的双重缺陷",
+  "market_summary": "沙盒环境网络受限，无法获取实时市场数据。基于代码审查执行本轮维护。",
+  "decision": "修复 _reset_grid 两个缺陷：(1)幽灵仓位路径未取消TP单；(2)孤儿仓市价平仓无analysis事件",
   "param_changes": [],
   "code_changes": [
     {
       "file": "quant/strategy/grid_pro.py",
-      "summary": "_emergency_close：取消入场单后对每个oid调用_query_order，若已成交则恢复slot为HOLDING，使_market_close_all能正确关闭；_reset_grid：始终查询（不只在cancel失败时），发现孤儿仓直接发起市价平仓而非仅打日志"
+      "summary": "修复1: _reset_grid 在清除 _tp_order_id 前增加 TP 取消，防止幽灵持仓检测路径（line~2300）遗留悬浮TP单；修复2: 孤儿仓市价平仓成功后记录 orphan_close analysis事件"
     }
   ],
-  "risk_notes": "仍在沙盒中，无法验证实盘效果。孤儿仓修复可消除极端行情下快速成交+触发止损时的幽灵持仓风险。",
-  "next_focus": "round78: 审查 _sync_tp partially_canceled 分支在 _reset_grid 调用链中的完整性；检查 analysis.jsonl 是否有 emergency_close 事件频率异常",
-  "round_number": "77"
+  "risk_notes": "ghost-position路径（内部有仓/交易所无仓）清除时TP悬浮风险已修复；_sync_tp调用链逻辑经审查无双算bug",
+  "next_focus": "round79: 检查 _place_grid 中 TP 取消失败时是否有兜底（_update_tp cancel→place 的原子性）",
+  "round_number": "78"
 }
