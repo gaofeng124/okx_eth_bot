@@ -1466,9 +1466,19 @@ class GridProStrategy(TickStrategy):
         tp = self._vwap * (1.0 + tp_sign * self._grid_spacing * _eff_tp_mult)
         self._tp_price = tp
         oid = self._place_tp(self._total_held, tp)
+        if not oid:
+            # 首次失败：等 0.5s 后立即重试一次，降低单次网络抖动导致裸仓概率
+            time.sleep(0.5)
+            oid = self._place_tp(self._total_held, tp)
         if oid:
             self._tp_order_id = oid
             self._tp_placed_ts = time.time()
+        else:
+            log.error(
+                "[grid] _update_tp: TP挂单两次均失败，持仓%.1f合约暂无止盈保护，"
+                "下一tick将自动补挂（held=%.1f vwap=%.2f tp=%.2f）",
+                self._total_held, self._total_held, self._vwap, tp,
+            )
 
     def _maybe_trail_tp(self, mid: float) -> None:
         """
@@ -1535,6 +1545,11 @@ class GridProStrategy(TickStrategy):
                     if oid:
                         self._tp_order_id = oid
                         self._tp_placed_ts = now
+                    else:
+                        log.warning(
+                            "[grid] trail_tp(short): TP补挂失败，下一tick自动恢复"
+                            "（held=%.1f tp=%.2f）", self._total_held, new_tp,
+                        )
                 self._last_tp_trail_ts = now  # 无论成功与否都更新节流时间戳（与long一致）
         else:
             # long：市场继续上涨时向上追踪 TP
@@ -1552,6 +1567,11 @@ class GridProStrategy(TickStrategy):
                     if oid:
                         self._tp_order_id = oid
                         self._tp_placed_ts = now   # 重置超时计时器：市场上行时不应过早触发止损
+                    else:
+                        log.warning(
+                            "[grid] trail_tp(long): TP补挂失败，下一tick自动恢复"
+                            "（held=%.1f tp=%.2f）", self._total_held, new_tp,
+                        )
                 self._last_tp_trail_ts = now   # 触发条件成立即更新节流（与short路径对齐）
 
     # 有效权重最低门槛：等效于至少 0.5 个"新鲜"样本（防止桶数据全部超过 4 个半衰期后
@@ -2458,9 +2478,10 @@ class GridProStrategy(TickStrategy):
         # Phase 4 趋势日守卫（仅在 GRID_PHASE4_TREND_GUARD=1 时生效）
         self._check_phase4_trend_guard(now)
 
-        # ── 重启恢复：有持仓但无TP ────────────────────────────────────────────
-        # 重启时 _cancel_stale_orders 会撤掉旧TP，而 _tp_order_id 初始化为 ""，
-        # 导致持仓裸露（无止盈保护）。在此处检测并自动补挂TP。
+        # ── 有持仓但无TP → 自动补挂 ─────────────────────────────────────────
+        # 覆盖两种场景：
+        #   1. 重启：_cancel_stale_orders 撤掉旧TP，_tp_order_id 初始化为 ""
+        #   2. 运行时：_update_tp/_maybe_trail_tp 调用 _place_tp 失败，_tp_order_id 变空
         if self._total_held > 0 and not self._tp_order_id:
             if self._grid_spacing <= 0:
                 self._grid_spacing = self._vol.spacing_pct(
