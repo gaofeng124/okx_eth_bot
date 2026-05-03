@@ -951,10 +951,18 @@ class GridProStrategy(TickStrategy):
         if not oid:
             return True
         try:
-            self._rest.request("POST", "/api/v5/trade/cancel-order", {
+            resp = self._rest.request("POST", "/api/v5/trade/cancel-order", {
                 "instId": self._inst_id,
                 "ordId": oid,
             })
+            s_code = str((resp.get("data") or [{}])[0].get("sCode", "0"))
+            if s_code != "0":
+                if s_code == "51401":
+                    # 订单不存在（已成交或已撤），视为成功
+                    log.debug("[grid] 撤单 %s sCode=51401 订单不存在，视为成功", oid)
+                    return True
+                log.warning("[grid] 撤单 %s OKX拒绝 sCode=%s", oid, s_code)
+                return False
             return True
         except Exception as e:
             log.warning("[grid] 撤单失败 %s: %s", oid, e)

@@ -1,19 +1,19 @@
 {
-  "ran_at": "2026-05-03 05:00 UTC",
-  "eth_price": "N/A (network restricted)",
+  "ran_at": "2026-05-03 06:00 UTC",
+  "eth_price": "N/A (网络受限)",
   "eth_24h_change_pct": "N/A",
-  "fear_greed_index": "N/A (network restricted)",
-  "funding_rate": "N/A (network restricted)",
-  "market_summary": "沙盒网络限制，无法获取实时行情。市场数据缺失，本轮聚焦代码质量修复。",
-  "decision": "修复 _sync_tp 的 partially_canceled 分支：补记部分成交PnL + 按比例缩减 slot fill_sz，防止后续TP成交时PnL双算",
+  "fear_greed_index": "N/A (网络受限)",
+  "funding_rate": "N/A",
+  "market_summary": "沙盒环境网络受限，无法获取实时市场数据。上轮(round75)已完成 partial TP cancel PnL 双算修复。本轮聚焦 _cancel_order sCode 检查问题——系已知P1缺陷，影响订单状态一致性。",
+  "decision": "修复 _cancel_order：检查 OKX resp data[0].sCode，sCode非零时返回False（51401=订单不存在则视为成功），防止误认撤单成功导致后续状态错乱",
   "param_changes": [],
   "code_changes": [
     {
       "file": "quant/strategy/grid_pro.py",
-      "summary": "_sync_tp partially_canceled 分支：新增部分成交PnL记录（按fill_ratio比例分槽）、slot.fill_sz 缩减、fill_tp_partial 分析事件写入"
+      "summary": "_cancel_order 增加 sCode 检查：解析 resp data[0].sCode，非零时 warning+返回False；特殊处理 51401（订单不存在=成功），修复原来只捕获HTTP异常忽略OKX业务错误的漏洞"
     }
   ],
-  "risk_notes": "沙盒网络受限导致FGI/资金费率/1h高低缓存均无法获取，实盘运行时这些功能依赖真实网络环境。服务运行状态未确认。",
-  "next_focus": "round76: 检查 _cancel_order 是否正确解析 OKX sCode（目前未检查 data[0].sCode 导致 cancel 成功与否判断不准），考虑补充此修复提升订单状态一致性",
-  "round_number": 75
+  "risk_notes": "沙盒网络隔离，无法验证实盘订单撤销是否真实触发sCode非零场景；_reset_grid 依赖 _cancel_order 返回值做错误处理，此修复提升状态一致性",
+  "next_focus": "round77: 审查 _reset_grid 中 _cancel_order 失败路径的处理逻辑，确认返回 False 时是否有适当的重试或状态标记，防止脏槽位堆积",
+  "round_number": 76
 }
