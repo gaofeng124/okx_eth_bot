@@ -457,6 +457,7 @@ class GridProStrategy(TickStrategy):
         self._last_bid:      float = 0.0   # 最新 bid（用于下单前校验价格不越叉）
         self._last_sync_ts:  float = 0.0
         self._last_pos_sync: float = 0.0
+        self._sync_pending_ts: float = 0.0  # mid=0 时延迟对账的时间戳；bid 恢复后强制重试
         self._last_fund_ts:  float = 0.0
         self._last_status_ts: float = 0.0
         self._last_regime_stats_ts: float = 0.0
@@ -1256,6 +1257,7 @@ class GridProStrategy(TickStrategy):
         self._tp_price         = 0.0
         self._tp_placed_ts     = 0.0
         self._tp_exposed_since = 0.0
+        self._sync_pending_ts  = 0.0
         self._total_held       = 0.0
         self._vwap_value   = 0.0
         self._vwap         = 0.0
@@ -2252,6 +2254,10 @@ class GridProStrategy(TickStrategy):
         threshold = contracts_per_slot * 0.5（自适应，确保能检测单 slot 偏差）
         direction=short 时以 short_sz/short_upl 为准。
         """
+        # 若上次因 mid=0 跳过了完整补录，bid 恢复后立即强制重试
+        if self._sync_pending_ts > 0 and self._last_bid > 0:
+            self._last_pos_sync = 0.0
+            self._sync_pending_ts = 0.0
         if now - self._last_pos_sync < self._POSITION_SYNC_INTERVAL:
             return
         self._last_pos_sync = now
@@ -2295,47 +2301,58 @@ class GridProStrategy(TickStrategy):
                 "[grid] 持仓不一致！交易所=%.1f 内部=%.1f 差额=%.1f est_entry=%.2f，自动补录",
                 exchange_sz, internal_held, diff, est_entry,
             )
-            if est_entry > 0:
-                self._vwap_value += est_entry * diff
+            if est_entry <= 0:
+                # mid=0 边缘情况：暂以交易所持仓为准止住重复告警，等 bid 恢复后完整补录
                 self._total_held = exchange_sz
-                self._vwap = self._vwap_value / self._total_held
-                if self._grid_spacing <= 0:
-                    self._grid_spacing = self._vol.spacing_pct(
-                        self._atr_mult, self._min_sp, self._max_sp
-                    ) or self._min_sp
-
-                # ── 关键修复：将未追踪的合约分配到 HOLDING slots ──
-                held_in_slots = sum(
-                    s.fill_sz for s in self._slots if s.state == _S.HOLDING
+                self._sync_pending_ts = now
+                log.warning(
+                    "[grid] 持仓同步：mid=0 无法估算成本，暂以交易所持仓为准"
+                    "（total_held=%.1f），等待 bid 恢复后重试完整补录",
+                    exchange_sz,
                 )
-                untracked = exchange_sz - held_in_slots
-                if untracked > _sync_threshold:
-                    per_slot = self._contracts_per_slot or 0.2
-                    for s in self._slots:
-                        if untracked <= _sync_threshold:
-                            break
-                        if s.state == _S.HOLDING:
-                            continue
-                        # 先撤掉 ENTRY_LIVE 挂单
-                        if s.state == _S.ENTRY_LIVE and s.entry_order_id:
-                            self._cancel_order(s.entry_order_id)
-                            s.entry_order_id = ""
-                        assign = min(per_slot, untracked)
-                        s.state = _S.HOLDING
-                        s.fill_price = est_entry
-                        s.fill_sz = assign
-                        s.fill_ts = now
-                        untracked -= assign
-                    log.info(
-                        "[grid] slot 补录完成：%d 个 HOLDING slot",
-                        sum(1 for s in self._slots if s.state == _S.HOLDING),
-                    )
+                return
+            # est_entry > 0: 正常补录路径，清除待对账标记
+            self._sync_pending_ts = 0.0
+            self._vwap_value += est_entry * diff
+            self._total_held = exchange_sz
+            self._vwap = self._vwap_value / self._total_held
+            if self._grid_spacing <= 0:
+                self._grid_spacing = self._vol.spacing_pct(
+                    self._atr_mult, self._min_sp, self._max_sp
+                ) or self._min_sp
 
-                self._update_tp()
+            # ── 关键修复：将未追踪的合约分配到 HOLDING slots ──
+            held_in_slots = sum(
+                s.fill_sz for s in self._slots if s.state == _S.HOLDING
+            )
+            untracked = exchange_sz - held_in_slots
+            if untracked > _sync_threshold:
+                per_slot = self._contracts_per_slot or 0.2
+                for s in self._slots:
+                    if untracked <= _sync_threshold:
+                        break
+                    if s.state == _S.HOLDING:
+                        continue
+                    # 先撤掉 ENTRY_LIVE 挂单
+                    if s.state == _S.ENTRY_LIVE and s.entry_order_id:
+                        self._cancel_order(s.entry_order_id)
+                        s.entry_order_id = ""
+                    assign = min(per_slot, untracked)
+                    s.state = _S.HOLDING
+                    s.fill_price = est_entry
+                    s.fill_sz = assign
+                    s.fill_ts = now
+                    untracked -= assign
                 log.info(
-                    "[grid] 持仓修复完成：total_held=%.1f vwap=%.2f TP已补挂",
-                    self._total_held, self._vwap,
+                    "[grid] slot 补录完成：%d 个 HOLDING slot",
+                    sum(1 for s in self._slots if s.state == _S.HOLDING),
                 )
+
+            self._update_tp()
+            log.info(
+                "[grid] 持仓修复完成：total_held=%.1f vwap=%.2f TP已补挂",
+                self._total_held, self._vwap,
+            )
 
         elif diff < -_sync_threshold:
             # 内部认为有仓但交易所实际为0 → 幽灵持仓，清除防止错误操作
