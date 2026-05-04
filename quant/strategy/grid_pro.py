@@ -472,6 +472,7 @@ class GridProStrategy(TickStrategy):
         self._last_atr_save_ts: float = 0.0   # 节流：最多每5分钟保存一次
         self._last_eff_tp_mult: float = 1.0   # _update_tp最近一次有效乘数（fill_tp诊断用）
         self._emergency_closing: bool = False
+        self._emergency_close_failed_ts: float = 0.0  # 强平API失败时间戳；60s后circuit_break重试
 
         # 止损计数（1h 窗口）
         self._stop_times: deque[float] = deque()  # 触发止损的时间戳列表
@@ -1037,13 +1038,14 @@ class GridProStrategy(TickStrategy):
             log.warning("[grid] TP 下单异常: %s", e)
             return ""
 
-    def _market_close_all(self, mid: float, reason: str) -> None:
-        """市价平仓所有持仓槽位（long=sell，short=buy），记录盈亏。"""
+    def _market_close_all(self, mid: float, reason: str) -> bool:
+        """市价平仓所有持仓槽位（long=sell，short=buy），记录盈亏。返回 True=API成功，False=API失败。"""
         held = [s for s in self._slots if s.state == _S.HOLDING and s.fill_sz > 0]
         total = sum(s.fill_sz for s in held)
         if total <= 0:
-            return
+            return True
         api_side = self._exit_api_side()
+        _close_ok = True
         try:
             self._rest.request("POST", "/api/v5/trade/order", {
                 "instId": self._inst_id,
@@ -1059,6 +1061,7 @@ class GridProStrategy(TickStrategy):
             )
         except Exception as e:
             log.error("[grid] 市价平仓失败: %s", e)
+            return False  # API失败：slot状态保留（不清空），由 _emergency_close 计时重试
 
         sign = self._pnl_sign()
         session_net = 0.0  # 本次会话所有 slot 净盈亏之和
@@ -1118,6 +1121,7 @@ class GridProStrategy(TickStrategy):
                 )
             except Exception:
                 pass
+        return True
 
     # ══════════════════════════════════════════════════════════════════════════
     # 紧急平仓
@@ -1178,7 +1182,14 @@ class GridProStrategy(TickStrategy):
             self._tp_order_id = ""
 
         # 市价平仓
-        self._market_close_all(mid, reason)
+        _close_ok = self._market_close_all(mid, reason)
+        if not _close_ok:
+            # API中断：slot状态未清（持仓仍在），启动circuit_break计时，60s后tick循环重试
+            self._emergency_close_failed_ts = time.time()
+            self._emergency_closing = False
+            log.error("[grid] _emergency_close: 市价平仓API失败，启动circuit_break计时（60s后重试）")
+            return
+        self._emergency_close_failed_ts = 0.0
         self._reset_grid()
 
         # 记录本次止损
@@ -1258,6 +1269,7 @@ class GridProStrategy(TickStrategy):
         self._tp_placed_ts     = 0.0
         self._tp_exposed_since = 0.0
         self._sync_pending_ts  = 0.0
+        self._emergency_close_failed_ts = 0.0
         self._total_held       = 0.0
         self._vwap_value   = 0.0
         self._vwap         = 0.0
@@ -2530,6 +2542,28 @@ class GridProStrategy(TickStrategy):
                         exposed_secs,
                     )
                     self._emergency_close(f"tp_place_timeout_{exposed_secs:.0f}s", mid)
+
+        # 强平API失败兜底：60s未恢复 → circuit_break，暂停入场，重试强平
+        if self._emergency_close_failed_ts > 0:
+            _ec_fail_secs = now - self._emergency_close_failed_ts
+            if _ec_fail_secs >= 60.0:
+                log.error(
+                    "[grid] 强平API失败超时 %.0fs（>60s），circuit_break：暂停入场，重试强平",
+                    _ec_fail_secs,
+                )
+                self._grid_active = False
+                try:
+                    from quant.detailed_daily_log import record_analysis
+                    record_analysis(
+                        "circuit_break",
+                        reason="emergency_close_failed",
+                        elapsed_sec=round(_ec_fail_secs, 1),
+                        mid=mid,
+                        daily_pnl_realized=round(self._pnl.realized, 4),
+                    )
+                except Exception:
+                    pass
+                self._emergency_close(f"circuit_break_retry_{_ec_fail_secs:.0f}s", mid)
 
         # 持仓同步校验
         self._position_sync_check(runtime, now)
