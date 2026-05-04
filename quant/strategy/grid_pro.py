@@ -2534,7 +2534,10 @@ class GridProStrategy(TickStrategy):
                 )
             self._update_tp()
             # 裸仓超时保护：_place_tp 持续失败 60s 以上 → 主动强平，避免长期无保护敞口
-            if not self._tp_order_id and self._tp_exposed_since > 0:
+            # 若 circuit_break 已在计时（_emergency_close_failed_ts > 0），由 circuit_break
+            # 路径统一重试，避免每 60s 重置 _emergency_close_failed_ts 导致 circuit_break 永不触发
+            if (not self._tp_order_id and self._tp_exposed_since > 0
+                    and self._emergency_close_failed_ts == 0):
                 exposed_secs = now - self._tp_exposed_since
                 if exposed_secs >= 60.0:
                     log.error(

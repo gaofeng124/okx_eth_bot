@@ -1,19 +1,19 @@
 {
-  "ran_at": "2026-05-04 12:00 UTC",
-  "eth_price": "N/A (网络受限)",
+  "ran_at": "2026-05-04 13:00 UTC",
+  "eth_price": "N/A (sandbox network restricted)",
   "eth_24h_change_pct": "N/A",
-  "fear_greed_index": "N/A (获取失败)",
+  "fear_greed_index": "N/A (network restricted)",
   "funding_rate": "N/A",
-  "market_summary": "沙盒网络受限，无法获取实时行情。根据历史计划执行 round82 P1 改进：_emergency_close 二次兜底机制。",
-  "decision": "修复 _emergency_close 在 API 中断时自身失败无兜底的缺陷：_market_close_all 改返回 bool，API失败时保留 slot 状态不清空，启动 _emergency_close_failed_ts 计时，60s 后 tick 循环 circuit_break 暂停入场并重试强平",
+  "market_summary": "沙盒网络受限，市场数据不可达。根据round82遗留P1问题执行代码审查与修复。",
+  "decision": "修复 _tp_exposed_since 与 circuit_break 双路径竞争 bug：_tp_exposed_since 每60s重置 _emergency_close_failed_ts 导致 circuit_break 永不触发、_grid_active 永不置False；加 _emergency_close_failed_ts==0 保护条件后两路径正确互斥",
   "param_changes": [],
   "code_changes": [
     {
       "file": "quant/strategy/grid_pro.py",
-      "summary": "5处改动：(1)新增 _emergency_close_failed_ts 实例变量；(2)_reset_grid 清零该计时器；(3)_market_close_all 改返回 bool，API失败时提前 return False 不清 slot；(4)_emergency_close 处理 API失败：不调 _reset_grid，启动计时器；(5)tick 主循环新增 circuit_break 检查：失败60s后暂停入场并重试强平，写入 analysis.jsonl"
+      "summary": "line 2539: _tp_exposed_since 超时检查新增 `and self._emergency_close_failed_ts == 0` 条件，circuit_break 计时期间由 circuit_break 路径统一重试，避免计时器被反复重置"
     }
   ],
-  "risk_notes": "circuit_break 重试时 _emergency_closing=False 已正确清除（允许重入），但若 API 持续中断超过多次60s周期，将反复触发 circuit_break 写入 analysis.jsonl（可接受的日志量）",
-  "next_focus": "round83: 检查 _emergency_close_failed_ts > 0 期间 _tp_exposed_since 超时是否会重复触发 _emergency_close（需确认两路径互斥），以及 _market_close_all return True 末尾路径是否已正确覆盖",
-  "round_number": 82
+  "risk_notes": "circuit_break 路径现可正确在强平API持续失败60s后暂停入场并重试。_tp_exposed_since 在 circuit_break 激活期间静默，无双重触发风险。",
+  "next_focus": "round84: 验证 _reset_grid 中 _tp_exposed_since 是否被清零（保证 circuit_break 成功后 _tp_exposed_since 不残留），并检查 BOT_MAX_SESSION_HOURS 默认值是否>=24",
+  "round_number": 83
 }
