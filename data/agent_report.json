@@ -1,19 +1,19 @@
 {
-  "ran_at": "2026-05-03 09:00 UTC",
-  "eth_price": "N/A (沙盒网络限制)",
+  "ran_at": "2026-05-04 10:00 UTC",
+  "eth_price": "N/A（沙盒网络受限）",
   "eth_24h_change_pct": "N/A",
-  "fear_greed_index": "N/A (获取失败)",
+  "fear_greed_index": "N/A（网络受限）",
   "funding_rate": "N/A",
-  "market_summary": "沙盒环境无法访问外部API，市场数据不可用。参数状态正常：GRID_DAILY_TARGET=999，GRID_DRAWDOWN锁定值3.0，BOT_MAX_SESSION正常。本轮聚焦代码健壮性修复。",
-  "decision": "修复 _update_tp/_maybe_trail_tp 三处静默失败：增加单次即时重试（0.5s延迟）和 error/warning 日志，确保 _place_tp 失败时有可观测记录并降低裸仓概率",
+  "market_summary": "沙盒环境网络隔离，无法获取实时市场数据。策略参数均处于健康区间（GRID_DAILY_TARGET=999，BOT_MAX_SESSION=24h，GRID_DRAWDOWN locked=3.0），本轮专注修复TP持续挂单失败时的裸仓暴露问题。",
+  "decision": "新增 _tp_exposed_since 裸仓计时器：_place_tp 连续失败60秒触发emergency_close，彻底封堵无限裸仓敞口",
   "param_changes": [],
   "code_changes": [
     {
       "file": "quant/strategy/grid_pro.py",
-      "summary": "_update_tp: _place_tp失败后增加0.5s重试+error日志；_maybe_trail_tp short/long两分支各增加warning日志；恢复检查注释明确覆盖运行时失败场景"
+      "summary": "新增 _tp_exposed_since 属性（__init__ + _reset_grid），在 _update_tp/_maybe_trail_tp(short/long) 三处失败路径记录裸仓起始时间，在 tick 恢复检查块中：_place_tp 持续失败>=60s 则调用 _emergency_close('tp_place_timeout_Xs', mid) 主动强平"
     }
   ],
-  "risk_notes": "裸仓窗口已从'一整tick（数秒）'缩短为'单次API重试后若仍失败则一tick'，且有明确error日志可告警。剩余风险：_place_tp连续失败（如API限频）时仍依赖下一tick的2484行恢复检查",
-  "next_focus": "round80: 检查 _sync_pos（持仓对账）中的 _total_held 与交易所实际持仓差异处理逻辑，确认对账失败时是否有适当告警和恢复路径",
-  "round_number": "79"
+  "risk_notes": "API长时间中断时持仓将在60s内被强平（而非永久裸露），强平本身也可能失败（API仍中断），但这属于不可抗力场景；其余风险已在前79轮覆盖",
+  "next_focus": "round81：检查 _position_sync_check 中当 mid=0（tick gap）时 est_entry=0 导致补录跳过的边缘情况，补充降级处理或延迟恢复机制",
+  "round_number": 80
 }

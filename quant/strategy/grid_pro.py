@@ -425,6 +425,7 @@ class GridProStrategy(TickStrategy):
         self._tp_order_id: str   = ""
         self._tp_price:    float = 0.0
         self._tp_placed_ts: float = 0.0  # TP 下单时间戳（用于老化降价）
+        self._tp_exposed_since: float = 0.0  # 裸仓计时：_place_tp 首次失败的时间戳；60s 未恢复触发强平
 
         # 子模块
         self._vol  = _VolEngine()
@@ -1251,10 +1252,11 @@ class GridProStrategy(TickStrategy):
         # _cancel_order treats 51401 (already filled/cancelled) as success → safe for all paths.
         if self._tp_order_id:
             self._cancel_order(self._tp_order_id)
-        self._tp_order_id  = ""
-        self._tp_price     = 0.0
-        self._tp_placed_ts = 0.0
-        self._total_held   = 0.0
+        self._tp_order_id      = ""
+        self._tp_price         = 0.0
+        self._tp_placed_ts     = 0.0
+        self._tp_exposed_since = 0.0
+        self._total_held       = 0.0
         self._vwap_value   = 0.0
         self._vwap         = 0.0
         self._grid_active  = False
@@ -1471,13 +1473,17 @@ class GridProStrategy(TickStrategy):
             time.sleep(0.5)
             oid = self._place_tp(self._total_held, tp)
         if oid:
-            self._tp_order_id = oid
-            self._tp_placed_ts = time.time()
+            self._tp_order_id      = oid
+            self._tp_placed_ts     = time.time()
+            self._tp_exposed_since = 0.0  # 挂单成功，清除裸仓计时器
         else:
+            if self._tp_exposed_since == 0.0:
+                self._tp_exposed_since = time.time()
             log.error(
                 "[grid] _update_tp: TP挂单两次均失败，持仓%.1f合约暂无止盈保护，"
-                "下一tick将自动补挂（held=%.1f vwap=%.2f tp=%.2f）",
-                self._total_held, self._total_held, self._vwap, tp,
+                "裸仓%.0fs（held=%.1f vwap=%.2f tp=%.2f）",
+                self._total_held, time.time() - self._tp_exposed_since,
+                self._total_held, self._vwap, tp,
             )
 
     def _maybe_trail_tp(self, mid: float) -> None:
@@ -1543,9 +1549,12 @@ class GridProStrategy(TickStrategy):
                     self._tp_price = new_tp
                     oid = self._place_tp(self._total_held, new_tp)
                     if oid:
-                        self._tp_order_id = oid
-                        self._tp_placed_ts = now
+                        self._tp_order_id      = oid
+                        self._tp_placed_ts     = now
+                        self._tp_exposed_since = 0.0
                     else:
+                        if self._tp_exposed_since == 0.0:
+                            self._tp_exposed_since = now
                         log.warning(
                             "[grid] trail_tp(short): TP补挂失败，下一tick自动恢复"
                             "（held=%.1f tp=%.2f）", self._total_held, new_tp,
@@ -1565,9 +1574,12 @@ class GridProStrategy(TickStrategy):
                     self._tp_price = new_tp
                     oid = self._place_tp(self._total_held, new_tp)
                     if oid:
-                        self._tp_order_id = oid
-                        self._tp_placed_ts = now   # 重置超时计时器：市场上行时不应过早触发止损
+                        self._tp_order_id      = oid
+                        self._tp_placed_ts     = now   # 重置超时计时器：市场上行时不应过早触发止损
+                        self._tp_exposed_since = 0.0
                     else:
+                        if self._tp_exposed_since == 0.0:
+                            self._tp_exposed_since = now
                         log.warning(
                             "[grid] trail_tp(long): TP补挂失败，下一tick自动恢复"
                             "（held=%.1f tp=%.2f）", self._total_held, new_tp,
@@ -2492,6 +2504,15 @@ class GridProStrategy(TickStrategy):
                     self._grid_spacing * 100,
                 )
             self._update_tp()
+            # 裸仓超时保护：_place_tp 持续失败 60s 以上 → 主动强平，避免长期无保护敞口
+            if not self._tp_order_id and self._tp_exposed_since > 0:
+                exposed_secs = now - self._tp_exposed_since
+                if exposed_secs >= 60.0:
+                    log.error(
+                        "[grid] 裸仓超时 %.0fs（>60s），_place_tp 持续失败，触发强平保护",
+                        exposed_secs,
+                    )
+                    self._emergency_close(f"tp_place_timeout_{exposed_secs:.0f}s", mid)
 
         # 持仓同步校验
         self._position_sync_check(runtime, now)
