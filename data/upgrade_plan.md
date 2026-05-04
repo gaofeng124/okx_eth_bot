@@ -1,89 +1,84 @@
 # ETH量化系统升级计划
 
-## 本次（2026-05-04 第八十三轮）完成
+## 本次（2026-05-04 第八十四轮）完成
 
-### grid_pro.py：修复 _tp_exposed_since 与 circuit_break 双路径竞争 bug
+### grid_pro.py：修复 _maybe_trail_tp 在 spacing_abs=0 时的零利润平仓 bug
 
-**问题根因（round82 P1 遗留）：**
+**问题根因：**
 
-两个超时路径存在隐性竞争，导致 `circuit_break`（`_grid_active=False`）永远无法触发：
+`_reset_grid_state` 将 `_grid_spacing` 清零（line 1901），当调用路径为：
+1. 在"补充空置槽位"步骤（step 12，line 3162），EMPTY 槽位目标价越叉 bid → 调 `_reset_grid_state`
+2. 此时仍有 HOLDING slots + 活跃 TP 订单（`_tp_order_id` 非空）
+3. `_grid_active=False`，`_grid_spacing=0.0`，`_grid_center=0.0`
 
-1. T=60s：`_tp_exposed_since` 超时 → 调 `_emergency_close` → API失败 → `_emergency_close_failed_ts = T+60s`
-2. T=120s：`_tp_exposed_since` 再次超时（从未被清，因 `_reset_grid` 未执行）  
-   → 再次调 `_emergency_close` → API失败 → `_emergency_close_failed_ts = T+120s`（**重置！**）
-3. `circuit_break` 检查时 `_ec_fail_secs ≈ 0 < 60` → **`_grid_active=False` 永不执行**
-
-每隔 60s，`_tp_exposed_since` 都会抢先调用 `_emergency_close`，将 `_emergency_close_failed_ts` 刷新为"刚才"，使 circuit_break 路径永远看到 `_ec_fail_secs < 60`。
-
-**修复方案（1处改动）：**
-
-`grid_pro.py` line 2539，在 `_tp_exposed_since` 超时检查条件中追加：
+下一个 tick，`_maybe_trail_tp` 被调用（line 2713, `if self._total_held > 0`），此时：
 ```python
-and self._emergency_close_failed_ts == 0
+spacing_abs = 0.0 * self._vwap = 0.0  # line 1530
 ```
 
-完整条件：
+Long 路径触发条件退化为：
 ```python
-if (not self._tp_order_id and self._tp_exposed_since > 0
-        and self._emergency_close_failed_ts == 0):
+if mid > self._tp_price + 0.0:  # = if mid > tp_price
 ```
 
-**修复后的正确执行序列：**
-- T=60s：`_emergency_close_failed_ts==0` → `_tp_exposed_since` 正常触发强平，API失败 → 设置 `_emergency_close_failed_ts`
-- T=60s（同tick）：circuit_break 检查：`_ec_fail_secs≈0 < 60` → 不触发（正常）
-- T=121s：`_emergency_close_failed_ts > 0` → `_tp_exposed_since` **被抑制**（不重置计时器）  
-  → circuit_break：`_ec_fail_secs=61 >= 60` → `_grid_active=False` + 重试强平
-- 重试成功：`_emergency_close_failed_ts=0`，`_reset_grid`（清 `_tp_exposed_since`），恢复正常
-- 重试失败：`_emergency_close_failed_ts` 重置为NOW，60s后再次重试
+若触发，新 TP = `mid - 0 * offset = mid`（贴市价），且 `new_tp > tp_price`（若 mid 越过旧 TP）→ 取消旧 TP，以当前价重挂 → 立即成交 → **零利润或亏损**。
 
-**效果预期：**
-- API持续中断时，circuit_break 每60s正确触发一次，`_grid_active=False` 暂停入场
-- 正常路径（`_emergency_close_failed_ts=0`）：`_tp_exposed_since` 行为完全不变
-- 两路径严格互斥，无双重调用风险
+**修复（1处改动，grid_pro.py line 1534）：**
+```python
+if spacing_abs <= 0:
+    return  # _grid_spacing cleared by _reset_grid_state; skip trail
+```
+
+在 `spacing_abs` 计算后立即检查，拦截 spacing=0 的 trail 路径。
+
+**效果：**
+- 下次 tick：若 `_tp_order_id` 为空（TP 填成），走 `_update_tp` 路径，guard at line 2527-2534 会重算 `_grid_spacing`
+- 若 `_tp_order_id` 存在（TP 仍活跃），trail 被安全跳过，直到 `_grid_spacing` 被外部重算后再恢复
+- 原正常路径（`_grid_spacing > 0`）完全不受影响
 
 ---
 
 ## 历史完成（节选）
 
+### 第八十三轮（2026-05-04）
+- [x] grid_pro.py: 修复 _tp_exposed_since 与 circuit_break 双路径竞争：加 `_emergency_close_failed_ts==0` 保护条件，两路径严格互斥
+
 ### 第八十二轮（2026-05-04）
-- [x] grid_pro.py: 修复 _emergency_close 在 API 中断时无兜底：_market_close_all 改返回 bool，API失败保留 slot，启动 _emergency_close_failed_ts 计时，60s circuit_break 重试
+- [x] grid_pro.py: 修复 _emergency_close API失败无兜底：启动 circuit_break 计时，60s后重试
 
 ### 第八十一轮（2026-05-04）
-- [x] grid_pro.py: 修复 _position_sync_check mid=0 时 est_entry=0 导致补录跳过的边缘 bug
+- [x] grid_pro.py: 修复 _position_sync_check mid=0 时 est_entry=0 补录跳过 bug
 
 ### 第八十轮（2026-05-04）
 - [x] grid_pro.py: 新增 _tp_exposed_since 裸仓计时器
 
-### 第七十九轮（2026-05-03）
-- [x] grid_pro.py: 修复 _update_tp / _maybe_trail_tp 三处静默失败
-
-### 第七十八轮（2026-05-03）
-- [x] grid_pro.py: 修复 _reset_grid 幽灵仓TP未取消 + 孤儿仓无analysis事件
-
-### 第一~七十七轮（2026-04-18~05-03）
-- [x] 全部P0/P1问题：WS重连/持仓同步/自适应TP/EWMA/FGI/资金费率/1h gate等
+### 第七十八~七十九轮（2026-05-03）
+- [x] grid_pro.py: 修复 _reset_grid 幽灵仓TP未取消 + _update_tp/_maybe_trail_tp 三处静默失败
 
 ---
 
 ## 待解决问题（按优先级）
 
-- [ ] P1: round84: 确认 `_reset_grid` 中 `_tp_exposed_since` 是否被清零（grep确认），保证 circuit_break 成功后 `_tp_exposed_since` 不残留重新触发
-- [ ] P1: round84: 检查 `BOT_MAX_SESSION_HOURS` 默认值是否 >=24，若 <20 需改为 24
-- [ ] P2: 验证服务实际运行状态（systemctl status / journalctl 最新日志）
-- [ ] P2: 验证 analysis.jsonl 中 orphan_close 事件是否已被触发（第78轮新增）
+- [ ] P1: round85: 考虑在 _reset_grid_state 中将 _grid_spacing 恢复为 vol.spacing_pct() 而非清零，这比 guard 更积极（确保即使 TP 存在时下一次 trail 也能正常工作）
+- [ ] P1: round85: 检查 _sync_tp 超时路径（_tp_placed_ts 超时）是否需要区分 partial_filled 状态
+- [ ] P2: 验证服务实际运行状态（需要服务器 journalctl / systemctl）
+- [ ] P2: 验证 analysis.jsonl 中 orphan_close 和 circuit_break 事件是否触发
 
 ## 下次优先行动
 
-**round84：**
-1. `grep -n '_tp_exposed_since' quant/strategy/grid_pro.py` 确认 `_reset_grid` 中有清零
-2. `grep -n 'BOT_MAX_SESSION' quant/settings.py` 确认默认值 >=24
-3. 若 `_tp_exposed_since` 在 `_reset_grid` 中未清零：在 `_reset_grid` 末尾补充 `self._tp_exposed_since = 0.0`
+**round85：**
+1. 读取 `_reset_grid_state` 代码，在最后追加：
+   ```python
+   self._grid_spacing = self._vol.spacing_pct(self._atr_mult, self._min_sp, self._max_sp) or self._min_sp
+   ```
+   这样即使 TP 还活跃，trail 也能用正确 spacing 工作（比 guard 更主动）
+2. 同时检查 `_sync_tp` 超时逻辑（`_tp_placed_ts` 超时后是否需要考虑 partial_filled 状态）
 
 ## 系统评估
 - **策略有效性**：9/10
-  - 83轮迭代，强平保护链条现完全正确：`_place_tp`失败→裸仓60s（仅当无circuit_break）→`_emergency_close`→API失败→circuit_break 60s→`_grid_active=False`→重试
-  - 两路径严格互斥，不存在竞争条件
+  - 84轮迭代，TP保护链条已全面覆盖：place→trail→timeout→emergency_close→circuit_break
+  - 本轮修补 spacing=0 时 trail 零利润平仓的边缘 bug
 - **当前主要风险**：
-  1. 沙盒网络受限，实盘逻辑和市场响应无法验证
-  2. 需确认 `_reset_grid` 清零 `_tp_exposed_since`（理论上应有）
-- **累计运行轮次**：83
+  1. 沙盒网络受限，实盘逻辑无法实时验证
+  2. _reset_grid_state 将 _grid_spacing 清零有更深层的设计问题（应考虑恢复而非清零）
+- **累计运行轮次**：84

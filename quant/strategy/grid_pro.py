@@ -1528,6 +1528,11 @@ class GridProStrategy(TickStrategy):
         if now - self._last_tp_trail_ts < _min_trail_iv:
             return  # 节流：避免每个 tick 都 cancel/replace TP 单
         spacing_abs = self._grid_spacing * self._vwap
+        if spacing_abs <= 0:
+            # _grid_spacing cleared by _reset_grid_state; trail with spacing=0 would move TP to
+            # current price (new_tp = mid ± 0), causing immediate execution at break-even.
+            # Skip until _grid_spacing is restored by the next _update_tp call.
+            return
         # 2026-04-22 18:00 主人方案 A：放严 trail trigger 防偷盈利
         #
         # 问题分析：原 trigger 0.30 / 0.40 意思是"价格超出 TP 0.3-0.4 格宽就把

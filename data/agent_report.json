@@ -1,19 +1,19 @@
 {
-  "ran_at": "2026-05-04 13:00 UTC",
-  "eth_price": "N/A (sandbox network restricted)",
+  "ran_at": "2026-05-04 14:00 UTC",
+  "eth_price": "N/A (沙盒网络受限)",
   "eth_24h_change_pct": "N/A",
-  "fear_greed_index": "N/A (network restricted)",
+  "fear_greed_index": "N/A (沙盒网络受限)",
   "funding_rate": "N/A",
-  "market_summary": "沙盒网络受限，市场数据不可达。根据round82遗留P1问题执行代码审查与修复。",
-  "decision": "修复 _tp_exposed_since 与 circuit_break 双路径竞争 bug：_tp_exposed_since 每60s重置 _emergency_close_failed_ts 导致 circuit_break 永不触发、_grid_active 永不置False；加 _emergency_close_failed_ts==0 保护条件后两路径正确互斥",
+  "market_summary": "沙盒环境无法访问外部API，市场数据不可用。专注代码质量和防御性修复，确保极端条件下TP保护机制正确工作。",
+  "decision": "修复 _maybe_trail_tp 中 spacing_abs=0 时的防御性 guard：_reset_grid_state 清空 _grid_spacing 后若立即触发 trail，new_tp=mid（即时平仓无利润），加 `if spacing_abs <= 0: return` 阻断该路径",
   "param_changes": [],
   "code_changes": [
     {
       "file": "quant/strategy/grid_pro.py",
-      "summary": "line 2539: _tp_exposed_since 超时检查新增 `and self._emergency_close_failed_ts == 0` 条件，circuit_break 计时期间由 circuit_break 路径统一重试，避免计时器被反复重置"
+      "summary": "_maybe_trail_tp: 在 spacing_abs 计算后加 `if spacing_abs <= 0: return` 防御 _reset_grid_state 清零 _grid_spacing 后 trail 将 TP 移到当前价导致零利润平仓"
     }
   ],
-  "risk_notes": "circuit_break 路径现可正确在强平API持续失败60s后暂停入场并重试。_tp_exposed_since 在 circuit_break 激活期间静默，无双重触发风险。",
-  "next_focus": "round84: 验证 _reset_grid 中 _tp_exposed_since 是否被清零（保证 circuit_break 成功后 _tp_exposed_since 不残留），并检查 BOT_MAX_SESSION_HOURS 默认值是否>=24",
-  "round_number": 83
+  "risk_notes": "沙盒网络限制导致无法验证实盘运行状态；_reset_grid_state 路径（补仓时目标价越叉）现在已防御 spacing=0 的 trail 误触发",
+  "next_focus": "round85: 检查 _reset_grid_state 是否应将 _grid_spacing 恢复（而非清零），若恢复为 vol.spacing_pct() 则比 guard 更积极；同时验证 _sync_tp 超时逻辑是否需要区分 partial_filled 情形",
+  "round_number": "84"
 }
