@@ -1,52 +1,41 @@
 # ETH量化系统升级计划
 
-## 本次（2026-05-05 第八十五轮）完成
+## 本次（2026-05-05 第八十六轮）完成
 
-### 修复1：grid_pro.py `_reset_grid_state` 根治 spacing 清零问题
+### 修复：grid_pro.py `_position_sync_check` 部分幽灵仓等比缩减 bug
 
 **问题：**
-第84轮在 `_maybe_trail_tp` 加了 `if spacing_abs <= 0: return` guard，是防御性补丁。
-根本原因是 `_reset_grid_state`（line 1906）将 `_grid_spacing = 0.0`，导致：
-- 有 HOLDING slots 时 trail 被无条件跳过（gap 期间 TP 无法追踪）
-- `_init_grid` 重启前若市价大幅偏离，TP 停在原处（过时定价）
+`_position_sync_check` 中，当 `diff < -_sync_threshold` 且 `exchange_sz >= _sync_threshold`（部分幽灵仓）时：
+- 旧代码在 line 2415 计算了 `ratio = exchange_sz / internal_held` 但**从未使用**
+- 实际逻辑是 `kept` 逐个累加 slot，超出 `exchange_sz+threshold` 的 slot 整体清零
+- 结果：`self._total_held = exchange_sz`（如0.3），但 `sum(s.fill_sz for HOLDING slots)` 可能仅 0.2
+- 下次 `_sync_tp` 按 slot 累计 PnL 时，总 PnL 按 0.2 算但 TP 成交量是 0.3 → **PnL 漏算 33%**
 
-**修复（line 1904-1914）：**
+**修复：**
+改为等比缩减每个 HOLDING slot 的 `fill_sz`：
 ```python
-if self._total_held > 0:
-    self._grid_spacing = (
-        self._vol.spacing_pct(self._atr_mult, self._min_sp, self._max_sp)
-        or self._min_sp
-    )
-else:
-    self._grid_spacing = 0.0
+ratio = exchange_sz / internal_held
+for s in held:
+    s.fill_sz = round(s.fill_sz * ratio, 8)
+self._total_held = exchange_sz
+self._vwap_value = self._vwap * exchange_sz
 ```
+确保 `sum(fill_sz for HOLDING) == total_held == exchange_sz`，PnL 计算精准。
 
-**效果：**
-- 有持仓时，重置后 spacing 立即恢复为当前 ATR 计算值
-- `_maybe_trail_tp` 的 round84 guard（`if spacing_abs <= 0: return`）保留为安全网，但正常路径下不再触发
-- 无持仓时（无需 TP trail）照旧清零，`_init_grid` 重算
+**附加：**
+新增 `record_analysis("ghost_position_sync", ...)` 监控事件，便于复盘幽灵仓触发频率。
 
----
-
-### 修复2：grid_pro.py `_emergency_close` 补录 TP partial fill PnL
-
-**问题：**
-`_emergency_close` 取消 TP 后直接 `_tp_order_id = ""`，未查询 TP 是否已 partial fill。
-若 TP 在取消窗口内已成交部分：`state=partially_canceled, fillSz>0` → PnL 静默丢失。
-
-**修复（line 1179-1206）：**
-取消 TP 后查询订单状态；若 `partially_canceled` 且 `fillSz>0`，按比例：
-1. 计算各 slot 对应份额的净 PnL（含手续费）并 `self._pnl.add()`
-2. 缩减对应的 `s.fill_sz` 和 `self._total_held`
-3. 记录 warning 日志
-
-**效果：**
-- 避免紧急平仓时漏记 TP 已成交部分的正向 PnL
-- `_market_close_all` 后续只平剩余仓位，数量准确
+**效果预期：**
+- 幽灵仓（部分）场景下 PnL 计算准确，不再漏算
+- analysis.jsonl 中有 ghost_position_sync 事件，可统计发生频率
 
 ---
 
 ## 历史完成（节选）
+
+### 第八十五轮（2026-05-05）
+- [x] grid_pro.py: _reset_grid_state 根治 spacing 清零问题（有持仓时从 vol 恢复）
+- [x] grid_pro.py: _emergency_close 补录 TP partial fill PnL
 
 ### 第八十四轮（2026-05-04）
 - [x] grid_pro.py: 修复 _maybe_trail_tp 在 spacing_abs=0 时的零利润平仓 bug（防御性 guard）
@@ -57,38 +46,29 @@ else:
 ### 第八十二轮（2026-05-04）
 - [x] grid_pro.py: 修复 _emergency_close API失败无兜底
 
-### 第八十一轮（2026-05-04）
-- [x] grid_pro.py: 修复 _position_sync_check mid=0 时 bug
-
-### 第八十轮（2026-05-04）
-- [x] grid_pro.py: 新增 _tp_exposed_since 裸仓计时器
-
 ---
 
 ## 待解决问题（按优先级）
 
-- [ ] P1: round86: 在 _init_grid 结束时将 grid_spacing_bps 记录到 analysis.jsonl，便于事后复盘格宽历史（当前只有 fill_tp 事件包含格宽）
-- [ ] P1: round86: 验证 _update_tp guard（line 2336）与本轮 _reset_grid_state 修复的交互——理论上两者互补，guard 更少触发但保留无害
-- [ ] P2: 验证服务实际运行状态（需服务器 journalctl / systemctl）
-- [ ] P2: 验证 analysis.jsonl 中 orphan_close 和 circuit_break 事件是否触发
+- [ ] P1: round87: 检查 _position_sync_check positive-diff 路径（untracked position 补录，line ~2397）是否缺少 record_analysis 监控事件（目前只有 log.warning，无 analysis.jsonl 记录）
+- [ ] P1: round87: 验证 _adaptive_trail_trigger/offset EWMA 冷启动历史重播（_replay_tp_history）是否正确：若 analysis.jsonl 为空或格式不匹配，EWMA 无历史 → trail 参数全程用默认值；检查是否有 exception 吞掉了重播错误
+- [ ] P2: 评估实盘 _refresh_fgi/_refresh_funding REST fallback 在沙盒环境的 timeout 代价（均有 except 兜底，不影响主策略；实盘无此问题）
+- [ ] P3: 考虑在 analysis.jsonl 中记录每次 position_sync_check 的 diff，便于长期监控 API/内部一致性
 
 ## 下次优先行动
 
-**round86：**
-1. 在 `_init_grid` 末尾（line ~1420 后）追加记录：
-   ```python
-   record_analysis("grid_init", grid_spacing_bps=round(self._grid_spacing*10000,2),
-       atr_bps=round(self._vol.atr_short*10000,2), regime=self._current_regime.value)
-   ```
-   这样 analysis.jsonl 中有完整格宽时间序列，便于判断 ATR 是否过低导致格宽贴近下限。
-2. 检查 `_update_tp` 中 line 2336 guard 与 `_reset_grid_state` 新逻辑的交互（读代码确认，不需修改）
+**round87：**
+1. 读取 `_position_sync_check` positive-diff 路径（untracked position 补录，约 line 2327-2402）
+   确认是否缺少 `record_analysis` → 如缺，添加 `"untracked_position_sync"` 事件
+2. 读取 `_replay_tp_history`（约 line 1682-1750），检查 exception 是否被静默吞掉，
+   确认格式匹配条件 `if rec.get("event") != "fill_tp": continue` 是否覆盖所有情况
 
 ## 系统评估
 - **策略有效性**：9/10
-  - 85轮迭代，TP保护链条已全面覆盖：place→trail→timeout→emergency_close→circuit_break
-  - 本轮将 spacing 清零的根本问题消除（round84 guard 仍留作安全网）
-  - 新增 emergency_close 中 partial fill PnL 补录，账务更完整
+  - 86 轮迭代，核心链条完整：entry→fill→vwap→TP→trail→timeout→emergency→circuit_break
+  - 本轮修复 slot fill_sz 与 total_held 不一致的 PnL 精度 bug（低概率但影响账务）
+  - ghost_position_sync 监控事件补全，analysis.jsonl 覆盖更完整
 - **当前主要风险**：
-  1. 沙盒网络受限，实盘逻辑无法实时验证
-  2. _emergency_close 新增一次 query_order API 调用，极端行情下若 API 延迟高，紧急平仓会稍慢
-- **累计运行轮次**：85
+  1. 沙盒网络受限，实盘逻辑无法通过 API 调用验证
+  2. 幽灵仓修复后 ratio 缩减路径在实盘触发频率未知（理论上 < 0.1% 的 tick）
+- **累计运行轮次**：86

@@ -2407,24 +2407,34 @@ class GridProStrategy(TickStrategy):
                 "[grid] 幽灵持仓！交易所=%.1f < 内部=%.1f diff=%.2f threshold=%.2f，清除内部状态",
                 exchange_sz, internal_held, diff, _sync_threshold,
             )
+            try:
+                from quant.detailed_daily_log import record_analysis
+                record_analysis(
+                    "ghost_position_sync",
+                    exchange_sz=exchange_sz,
+                    internal_held=internal_held,
+                    diff=round(diff, 4),
+                    daily_pnl_realized=round(self._pnl.realized, 4),
+                )
+            except Exception:
+                pass
             if exchange_sz < _sync_threshold:
                 # 交易所完全无仓：全部清除
                 self._reset_grid()
             else:
-                # 交易所有部分仓位：以交易所为准等比缩减
+                # 交易所有部分仓位：等比缩减每个 slot 的 fill_sz，保持 sum(fill_sz)==exchange_sz
+                # 修复 round86 bug：旧代码用 kept 逐一清除整 slot，sum(fill_sz) != total_held，
+                # 导致 _sync_tp 计算 PnL 时 slot fill_sz 总量与 TP 成交量不一致
                 ratio = exchange_sz / internal_held
+                held = [s for s in self._slots if s.state == _S.HOLDING]
+                for s in held:
+                    s.fill_sz = round(s.fill_sz * ratio, 8)
                 self._total_held = exchange_sz
                 self._vwap_value = self._vwap * exchange_sz
-                held = [s for s in self._slots if s.state == _S.HOLDING]
-                kept = 0.0
-                for s in held:
-                    if kept + s.fill_sz <= exchange_sz + _sync_threshold:
-                        kept += s.fill_sz
-                    else:
-                        s.state = _S.EMPTY
-                        s.fill_sz = 0.0
-                        s.fill_price = 0.0
-                log.info("[grid] 幽灵仓缩减完成：total_held=%.1f", self._total_held)
+                log.info(
+                    "[grid] 幽灵仓等比缩减完成：total_held=%.1f ratio=%.3f",
+                    self._total_held, ratio,
+                )
 
     # ══════════════════════════════════════════════════════════════════════════
     # 定期状态日志

@@ -1,23 +1,19 @@
 {
-  "ran_at": "2026-05-05 05:00 UTC",
-  "eth_price": "N/A (network restricted)",
+  "ran_at": "2026-05-05 06:00 UTC",
+  "eth_price": "N/A (网络受限)",
   "eth_24h_change_pct": "N/A",
-  "fear_greed_index": "N/A (network restricted)",
-  "funding_rate": "N/A (network restricted)",
-  "market_summary": "沙盒环境网络受限，无法获取实时行情。代码逻辑分析正常进行。",
-  "decision": "双修复：(1) _reset_grid_state 中改为按 total_held 条件恢复 _grid_spacing（根治 round84 guard 的底层原因）；(2) _emergency_close 中补录 TP partial fill PnL，防止紧急平仓时漏记已成交部分收益",
+  "fear_greed_index": "N/A (沙盒网络受限)",
+  "funding_rate": "N/A",
+  "market_summary": "沙盒环境无法访问外部API，网络请求全部被拦截（Host not in allowlist）。市场数据无法获取，参数和代码仍按计划执行升级。",
+  "decision": "修复 _position_sync_check 部分幽灵仓路径 bug：旧代码 ratio 变量定义但未使用，slot fill_sz 总量与 _total_held 不一致，导致 _sync_tp PnL 计算偏差；改为等比缩减所有 HOLDING slot 的 fill_sz，并新增 ghost_position_sync 监控事件",
   "param_changes": [],
   "code_changes": [
     {
       "file": "quant/strategy/grid_pro.py",
-      "summary": "_reset_grid_state：_grid_spacing 从无条件清零改为 total_held>0 时恢复为 vol.spacing_pct()，确保 _maybe_trail_tp 在网格重置后仍能用正确间距追踪 TP"
-    },
-    {
-      "file": "quant/strategy/grid_pro.py",
-      "summary": "_emergency_close：取消 TP 后新增查询，若 state=partially_canceled 且 fillSz>0，按比例补录 PnL 到各 slot 并缩减 fill_sz/total_held，防止 partial TP fill 在紧急平仓时静默丢失"
+      "summary": "_position_sync_check 部分幽灵仓路径：用 ratio 等比缩减 fill_sz（修复 sum(fill_sz)!=total_held 的 PnL 精度 bug）；新增 record_analysis('ghost_position_sync') 监控事件"
     }
   ],
-  "risk_notes": "1. 沙盒网络受限，实盘逻辑无法实时验证。2. _emergency_close 中新增 query_order 调用，若 API 超时会轻微延迟紧急平仓，已有 timeout=5s 保护。3. _reset_grid_state 恢复的 spacing 基于当前 ATR（vol.atr_short），若 ATR 为 0 则退回 _min_sp 兜底。",
-  "next_focus": "round86：验证 _update_tp 中 _grid_spacing<=0 guard（line 2336）与本轮 _reset_grid_state 修复的交互——现在该 guard 更少触发但应保留。同时考虑在 _init_grid 中记录 grid_spacing 到 analysis.jsonl，便于事后分析格宽历史。",
-  "round_number": "85"
+  "risk_notes": "沙盒网络完全受限，所有 OKX/external API 均不可访问；实盘 grid_pro.py 中 _refresh_fgi/_refresh_funding/_check_phase4_trend_guard 的 REST fallback 均会 timeout，但均有 except 兜底，不影响主策略运行",
+  "next_focus": "round87: 检查 _position_sync_check 的 positive-diff 路径（untracked position 补录）是否也缺少 record_analysis 监控；评估 _adaptive_trail_trigger/offset EWMA 冷启动时历史重播机制是否正确加载",
+  "round_number": "86"
 }
