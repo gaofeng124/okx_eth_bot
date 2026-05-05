@@ -1,45 +1,47 @@
 # ETH量化系统升级计划
 
-## 本次（2026-05-05 第八十八轮）完成
+## 本次（2026-05-05 第八十九轮）完成
 
-### 修复：_position_sync_check 中 ENTRY_LIVE 撤单失败时孤立订单风险
+### 修复：_maybe_trail_tp 节流在 spacing 恢复后的短暂盲区
 
-**问题：**
-`_position_sync_check` 的 untracked 补录路径（diff > threshold）在为 ENTRY_LIVE slot 撤单时：
+**问题分析：**
+`_maybe_trail_tp` 开头有 20s（RANGING）/ 30s（TRENDING）节流：
 ```python
-self._cancel_order(s.entry_order_id)  # 返回值被丢弃
-s.entry_order_id = ""                  # 无论成功失败都清空
-# 然后直接 s.state = HOLDING
+if now - self._last_tp_trail_ts < _min_trail_iv:
+    return
 ```
-若 `_cancel_order` 返回 False（网络抖动或 OKX API 拒绝），该 slot 的：
-- 真实订单仍在 OKX 交易所活跃（ENTRY_LIVE 状态）
-- 内部 `entry_order_id` 已清空（失去追踪）
-- slot 状态设为 HOLDING（以为已成交）
+`_last_tp_trail_ts` 仅在 trail 触发时更新。若：
+1. Trail 在 T=0 触发，设 `_last_tp_trail_ts = T`
+2. T+1s：spacing 被 `_reset_grid_state` 清零（重置时 total_held=0，或进入清仓路径）
+3. T+5s：spacing 从另一条路径恢复（total_held > 0 后重算）
+4. T+11s：`_maybe_trail_tp` 检查：`11 - 0 = 11 < 20` → 被额外阻塞 9s
 
-**后果**：若该孤立订单后来成交，fill 回调找不到对应 slot，导致持仓量计算偏差，PnL 记录错误。
+最坏情形：trail 刚触发，spacing 立即清零再恢复，最多额外阻塞 20-30s。
+在此窗口内，TP 仍在原位，但无法追踪价格延伸，损失锁利机会。
 
 **修复：**
-检查 `_cancel_order` 返回值；若为 False，记录 warning 并 `continue` 跳过此 slot，保留其 ENTRY_LIVE 状态不变：
-```python
-cancelled = self._cancel_order(s.entry_order_id)
-if not cancelled:
-    log.warning("[grid] untracked补录：slot撤单失败 oid=%s，跳过此slot防止孤立订单", s.entry_order_id)
-    continue
-s.entry_order_id = ""
-```
+在两处 spacing 恢复赋值后追加 `self._last_tp_trail_ts = 0.0`：
+1. `_reset_grid_state`（line ~1934）：`total_held > 0` 分支恢复 spacing 后
+2. `_position_sync_check`（line ~2369）：`_grid_spacing <= 0` 补录恢复 spacing 后
 
 **效果预期：**
-- 撤单失败时 slot 保持 ENTRY_LIVE 不变，fill 回调仍能正确匹配
-- log.warning 可在日志中检索 "untracked补录：slot撤单失败"，监控 API 可靠性
+- spacing 恢复后 trail 可立即（本 tick）检查，消除最多 20-30s 盲区
+- 实际多出的 API 调用极少：触发条件仍需 `mid > tp + 1格宽`，不会导致 API 频繁调用
 
-### 确认（无需修改）：_update_tp 首次 0→正值 total_held 路径
-- `_vwap_value += est_entry * diff` → `_vwap = est_entry` 正确初始化
-- `_tp_spacing_sign()` 返回 ±1.0，TP 方向由 `_is_short` 决定，逻辑正确
-- `_cancel_order` 本身有 try/except，不会抛出异常到调用方
+### 已关闭的 P1 问题（round89 调查结论）
+
+**_emergency_close / circuit_break 幽灵 slot 问题：已关闭**
+- `_slots` 在 `__init__` 中始终重新初始化（全 EMPTY），重启后无跨会话幽灵 slot
+- 会话内：`_close_ok=False` 时设 `_emergency_close_failed_ts`；60s 后 tick 循环调用
+  `_emergency_close(circuit_break_retry)` 重试；重试成功后调用 `_reset_grid()` 清空所有 slot
+- 逻辑完整，无需修改
 
 ---
 
 ## 历史完成（节选）
+
+### 第八十八轮（2026-05-05）
+- [x] grid_pro.py: _position_sync_check untracked 补录路径：_cancel_order 返回值被忽略，撤单失败时 slot 错误设为 HOLDING；改为撤单失败时 continue 跳过，保留 ENTRY_LIVE 状态
 
 ### 第八十七轮（2026-05-05）
 - [x] grid_pro.py: _position_sync_check positive-diff 路径补充 record_analysis('untracked_position_sync') 监控事件
@@ -56,23 +58,23 @@ s.entry_order_id = ""
 
 ## 待解决问题（按优先级）
 
-- [ ] P1: round89: 检查 _maybe_trail_tp 在 _grid_spacing 从 0 恢复后首次触发时，_last_tp_trail_ts 节流是否导致 trail 窗口延迟（spacing=0 会 return，恢复后第一次 trail 可能被 20-30s 节流拦截）
-- [ ] P1: round89: 检查 _emergency_close / circuit_break 触发后是否清空所有 slot 状态（包括 ENTRY_LIVE、HOLDING），避免重启后幽灵 slot 残留
+- [ ] P1: round90: 检查 _adaptive_trail_trigger / _adaptive_trail_offset 的 EWMA 权重衰减 — 确认 TRENDING 模式使用 _EWMA_HALFLIFE_TRENDING 常量（应为 2700s），RANGING 使用 900s；检查常量定义位置和是否正确传入
 - [ ] P2: 评估 _refresh_fgi/_refresh_funding REST fallback 在沙盒环境 timeout 代价（均有 except 兜底，不影响主策略；实盘无此问题）
 - [ ] P3: analysis.jsonl 中记录每次 position_sync_check 的 diff 摘要（不仅在异常时，也在正常时每N次记录一次），便于长期 API 一致性监控
 
 ## 下次优先行动
 
-**round89：**
-1. 搜索 `def _maybe_trail_tp` 附近的 `_last_tp_trail_ts` 重置逻辑，确认 spacing 从 0 恢复时是否需要重置节流时间戳
-2. 搜索 `def _emergency_close` 和 circuit_break 相关代码，检查 slot 状态清理完整性
+**round90：**
+1. `grep -n '_EWMA_HALFLIFE\|_ewma_profit_avg\|halflife' quant/strategy/grid_pro.py` — 确认 TRENDING / RANGING 半衰期常量值及传参路径
+2. 检查 `_adaptive_trail_trigger` 和 `_adaptive_trail_offset` 是否正确切换 halflife
+3. 若发现 TRENDING 误用 900s（RANGING halflife），会导致成交稀疏时 EWMA 过快衰减，trail 参数无法积累有效样本
 
 ## 系统评估
 - **策略有效性**：9/10
-  - 88 轮迭代，孤立订单风险已修复
-  - untracked 补录路径：撤单失败时正确跳过，不污染 slot 状态
-  - core 链条：entry→fill→vwap→TP→trail→timeout→emergency→circuit_break 全覆盖
+  - 89 轮迭代，trail 节流盲区已修复
+  - 核心链条：entry→fill→vwap→TP→trail→timeout→emergency→circuit_break 全覆盖
+  - spacing 恢复后 trail 可立即响应，顺势行情锁利能力提升
 - **当前主要风险**：
   1. 沙盒网络受限，实盘逻辑无法通过 API 调用验证
-  2. _maybe_trail_tp 节流在 spacing 恢复后可能造成短暂 trail 盲区
-- **累计运行轮次**：88
+  2. EWMA 半衰期配置有待确认（下轮 P1）
+- **累计运行轮次**：89

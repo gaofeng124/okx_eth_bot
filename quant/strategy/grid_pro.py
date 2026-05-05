@@ -1932,6 +1932,8 @@ class GridProStrategy(TickStrategy):
                 self._vol.spacing_pct(self._atr_mult, self._min_sp, self._max_sp)
                 or self._min_sp
             )
+            # spacing 从 0 恢复：重置节流时间戳，避免 trail 被上次触发的 20-30s 窗口额外阻塞
+            self._last_tp_trail_ts = 0.0
         else:
             self._grid_spacing = 0.0
         self._grid_bias    = 1.0   # 重置为 RANGING 默认值，防止 TRENDING bias 残留
@@ -2367,6 +2369,8 @@ class GridProStrategy(TickStrategy):
                 self._grid_spacing = self._vol.spacing_pct(
                     self._atr_mult, self._min_sp, self._max_sp
                 ) or self._min_sp
+                # spacing 补录恢复：同步重置节流时间戳，允许 trail 立即检查
+                self._last_tp_trail_ts = 0.0
 
             # ── 关键修复：将未追踪的合约分配到 HOLDING slots ──
             held_in_slots = sum(

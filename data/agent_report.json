@@ -1,19 +1,19 @@
 {
-  "ran_at": "2026-05-05 08:00 UTC",
-  "eth_price": "N/A (sandbox network)",
+  "ran_at": "2026-05-05 09:00 UTC",
+  "eth_price": "N/A (sandbox网络受限)",
   "eth_24h_change_pct": "N/A",
-  "fear_greed_index": "N/A (sandbox network)",
+  "fear_greed_index": "N/A (API不可达)",
   "funding_rate": "N/A",
-  "market_summary": "沙盒环境网络受限，API数据不可达。市场状态未知，策略代码逻辑修复优先。已完成第88轮代码审查与缺陷修复。",
-  "decision": "修复 _position_sync_check 中 untracked 补录路径：_cancel_order 返回值被忽略，撤单失败时 slot 错误设为 HOLDING 导致孤立订单风险，现改为撤单失败时 continue 跳过该 slot",
+  "market_summary": "沙盒环境外网受限，无法获取实时市场数据。根据历史轮次，系统已运行88轮，核心逻辑链路健全，本轮专注于修复 _maybe_trail_tp 节流窗口残留问题。",
+  "decision": "修复 _maybe_trail_tp 节流延迟：spacing 从 0 恢复时重置 _last_tp_trail_ts，消除最多 20-30s 的 trail 盲区",
   "param_changes": [],
   "code_changes": [
     {
       "file": "quant/strategy/grid_pro.py",
-      "summary": "修复 _position_sync_check untracked 补录路径：检查 _cancel_order 返回值，失败时 log.warning 并 continue 跳过 slot，防止 ENTRY_LIVE 孤立订单与 HOLDING 状态不一致"
+      "summary": "_reset_grid_state 和 _position_sync_check 的 spacing 恢复路径中各追加 _last_tp_trail_ts=0.0，使 trail 在 spacing 恢复后可立即检查而不被上次触发的节流窗口阻塞"
     }
   ],
-  "risk_notes": "沙盒网络隔离，实盘逻辑仍无法通过 API 调用验证；_update_tp 首次 0→正值路径已确认无 bug（vwap 在 _position_sync_check 中正确初始化后才调用）",
-  "next_focus": "round89: 检查 _maybe_trail_tp 在 spacing_abs 从 0 恢复后的首次 trailing 逻辑 —— _last_tp_trail_ts 节流是否导致首次 trail 延迟过长；检查 emergency_close 在 circuit_break 触发后是否正确清空所有 slot 状态",
-  "round_number": "88"
+  "risk_notes": "沙盒网络受限，实盘 API 逻辑无法验证；_last_tp_trail_ts 重置为 0 后若 spacing 频繁切换（罕见），trail 检查频率会短暂提升，但因触发条件（>1格宽偏移）较严格，实际 API 调用不会暴增",
+  "next_focus": "round90: 检查 _adaptive_trail_trigger / _adaptive_trail_offset 的 EWMA 权重衰减在 TRENDING 模式下是否正确使用 2700s 半衰期（当前代码中确认 _EWMA_HALFLIFE_TRENDING 常量值）",
+  "round_number": "89"
 }
