@@ -1,19 +1,19 @@
 {
-  "ran_at": "2026-05-05 06:00 UTC",
-  "eth_price": "N/A (网络受限)",
+  "ran_at": "2026-05-05 07:00 UTC",
+  "eth_price": "N/A (沙盒网络受限)",
   "eth_24h_change_pct": "N/A",
   "fear_greed_index": "N/A (沙盒网络受限)",
   "funding_rate": "N/A",
-  "market_summary": "沙盒环境无法访问外部API，网络请求全部被拦截（Host not in allowlist）。市场数据无法获取，参数和代码仍按计划执行升级。",
-  "decision": "修复 _position_sync_check 部分幽灵仓路径 bug：旧代码 ratio 变量定义但未使用，slot fill_sz 总量与 _total_held 不一致，导致 _sync_tp PnL 计算偏差；改为等比缩减所有 HOLDING slot 的 fill_sz，并新增 ghost_position_sync 监控事件",
+  "market_summary": "沙盒环境无法访问外部 API，市场数据不可用。策略参数正常：GRID_DAILY_TARGET=999，GRID_DRAWDOWN=3.0，BOT_MAX_SESSION 未见异常。主要执行代码质量修复。",
+  "decision": "在 _position_sync_check positive-diff 路径（未追踪仓位补录）中补充 record_analysis('untracked_position_sync') 监控事件，使 analysis.jsonl 覆盖正负两个同步方向",
   "param_changes": [],
   "code_changes": [
     {
       "file": "quant/strategy/grid_pro.py",
-      "summary": "_position_sync_check 部分幽灵仓路径：用 ratio 等比缩减 fill_sz（修复 sum(fill_sz)!=total_held 的 PnL 精度 bug）；新增 record_analysis('ghost_position_sync') 监控事件"
+      "summary": "positive-diff 路径补充 record_analysis('untracked_position_sync')，与负差路径 ghost_position_sync 对称，便于复盘 untracked 补录频率"
     }
   ],
-  "risk_notes": "沙盒网络完全受限，所有 OKX/external API 均不可访问；实盘 grid_pro.py 中 _refresh_fgi/_refresh_funding/_check_phase4_trend_guard 的 REST fallback 均会 timeout，但均有 except 兜底，不影响主策略运行",
-  "next_focus": "round87: 检查 _position_sync_check 的 positive-diff 路径（untracked position 补录）是否也缺少 record_analysis 监控；评估 _adaptive_trail_trigger/offset EWMA 冷启动时历史重播机制是否正确加载",
-  "round_number": "86"
+  "risk_notes": "_replay_tp_history 已验证：exception 处理为主动设计，ts_wall isoformat 格式与 Python 3.11 fromisoformat 完全兼容，无隐患",
+  "next_focus": "round88: 检查 _update_tp 在 total_held 从0→正值（首次补录）时是否正确设置 TP 方向与价格；并检查 _cancel_order 在 ENTRY_LIVE slot 撤单失败时是否有 fallback（正差路径 line 2384-2386）",
+  "round_number": "87"
 }

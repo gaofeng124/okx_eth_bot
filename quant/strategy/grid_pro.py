@@ -2395,6 +2395,18 @@ class GridProStrategy(TickStrategy):
                     sum(1 for s in self._slots if s.state == _S.HOLDING),
                 )
 
+            try:
+                from quant.detailed_daily_log import record_analysis
+                record_analysis(
+                    "untracked_position_sync",
+                    exchange_sz=exchange_sz,
+                    internal_held=internal_held,
+                    diff=round(diff, 4),
+                    est_entry=round(est_entry, 2),
+                    daily_pnl_realized=round(self._pnl.realized, 4),
+                )
+            except Exception:
+                pass
             self._update_tp()
             log.info(
                 "[grid] 持仓修复完成：total_held=%.1f vwap=%.2f TP已补挂",
