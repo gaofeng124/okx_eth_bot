@@ -1,19 +1,23 @@
 {
-  "ran_at": "2026-05-04 14:00 UTC",
-  "eth_price": "N/A (沙盒网络受限)",
+  "ran_at": "2026-05-05 05:00 UTC",
+  "eth_price": "N/A (network restricted)",
   "eth_24h_change_pct": "N/A",
-  "fear_greed_index": "N/A (沙盒网络受限)",
-  "funding_rate": "N/A",
-  "market_summary": "沙盒环境无法访问外部API，市场数据不可用。专注代码质量和防御性修复，确保极端条件下TP保护机制正确工作。",
-  "decision": "修复 _maybe_trail_tp 中 spacing_abs=0 时的防御性 guard：_reset_grid_state 清空 _grid_spacing 后若立即触发 trail，new_tp=mid（即时平仓无利润），加 `if spacing_abs <= 0: return` 阻断该路径",
+  "fear_greed_index": "N/A (network restricted)",
+  "funding_rate": "N/A (network restricted)",
+  "market_summary": "沙盒环境网络受限，无法获取实时行情。代码逻辑分析正常进行。",
+  "decision": "双修复：(1) _reset_grid_state 中改为按 total_held 条件恢复 _grid_spacing（根治 round84 guard 的底层原因）；(2) _emergency_close 中补录 TP partial fill PnL，防止紧急平仓时漏记已成交部分收益",
   "param_changes": [],
   "code_changes": [
     {
       "file": "quant/strategy/grid_pro.py",
-      "summary": "_maybe_trail_tp: 在 spacing_abs 计算后加 `if spacing_abs <= 0: return` 防御 _reset_grid_state 清零 _grid_spacing 后 trail 将 TP 移到当前价导致零利润平仓"
+      "summary": "_reset_grid_state：_grid_spacing 从无条件清零改为 total_held>0 时恢复为 vol.spacing_pct()，确保 _maybe_trail_tp 在网格重置后仍能用正确间距追踪 TP"
+    },
+    {
+      "file": "quant/strategy/grid_pro.py",
+      "summary": "_emergency_close：取消 TP 后新增查询，若 state=partially_canceled 且 fillSz>0，按比例补录 PnL 到各 slot 并缩减 fill_sz/total_held，防止 partial TP fill 在紧急平仓时静默丢失"
     }
   ],
-  "risk_notes": "沙盒网络限制导致无法验证实盘运行状态；_reset_grid_state 路径（补仓时目标价越叉）现在已防御 spacing=0 的 trail 误触发",
-  "next_focus": "round85: 检查 _reset_grid_state 是否应将 _grid_spacing 恢复（而非清零），若恢复为 vol.spacing_pct() 则比 guard 更积极；同时验证 _sync_tp 超时逻辑是否需要区分 partial_filled 情形",
-  "round_number": "84"
+  "risk_notes": "1. 沙盒网络受限，实盘逻辑无法实时验证。2. _emergency_close 中新增 query_order 调用，若 API 超时会轻微延迟紧急平仓，已有 timeout=5s 保护。3. _reset_grid_state 恢复的 spacing 基于当前 ATR（vol.atr_short），若 ATR 为 0 则退回 _min_sp 兜底。",
+  "next_focus": "round86：验证 _update_tp 中 _grid_spacing<=0 guard（line 2336）与本轮 _reset_grid_state 修复的交互——现在该 guard 更少触发但应保留。同时考虑在 _init_grid 中记录 grid_spacing 到 analysis.jsonl，便于事后分析格宽历史。",
+  "round_number": "85"
 }

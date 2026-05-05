@@ -1176,9 +1176,31 @@ class GridProStrategy(TickStrategy):
                     _s.level, _fill_px, _fill_sz,
                 )
 
-        # 取消 TP 单
+        # 取消 TP 单；若 TP 已 partial fill，查询并补录 PnL（防止漏记）
         if self._tp_order_id:
-            self._cancel_order(self._tp_order_id)
+            _tp_oid_ec = self._tp_order_id
+            self._cancel_order(_tp_oid_ec)
+            _tp_ord = self._query_order(_tp_oid_ec)
+            _tp_fill_sz = float(_tp_ord.get("fillSz") or 0.0)
+            if str(_tp_ord.get("state", "")) == "partially_canceled" and _tp_fill_sz > 0:
+                _tp_fill_px = float(_tp_ord.get("avgPx") or _tp_ord.get("fillPx") or self._tp_price)
+                _sign = self._pnl_sign()
+                _fill_ratio = _tp_fill_sz / self._total_held if self._total_held > 0 else 0.0
+                _partial_net = 0.0
+                for _s in self._slots:
+                    if _s.state == _S.HOLDING and _s.fill_sz > 0:
+                        _slot_filled = _s.fill_sz * _fill_ratio
+                        _net = (_tp_fill_px - _s.fill_price) * _slot_filled * self._ct_val * _sign
+                        _fee = self._roundtrip_fee(_slot_filled, _tp_fill_px)
+                        _partial_net += _net - _fee
+                        self._pnl.add(_net - _fee)
+                        _s.fill_sz = max(0.0, _s.fill_sz - _slot_filled)
+                self._total_held = max(0.0, self._total_held - _tp_fill_sz)
+                self._vwap_value = self._vwap * self._total_held
+                log.warning(
+                    "[grid] 紧急平仓: TP partial fill @%.2f sz=%.3f pnl=%.4fU 已补录",
+                    _tp_fill_px, _tp_fill_sz, _partial_net,
+                )
             self._tp_order_id = ""
 
         # 市价平仓
@@ -1903,7 +1925,15 @@ class GridProStrategy(TickStrategy):
                 s.entry_order_id = ""
         self._grid_active = False
         self._grid_center = 0.0
-        self._grid_spacing = 0.0
+        # Restore spacing when holding (TP trail needs it); _init_grid recalculates on restart.
+        # Clearing to 0 caused zero-profit TP trail (round84 guard fixed symptom; this fixes root).
+        if self._total_held > 0:
+            self._grid_spacing = (
+                self._vol.spacing_pct(self._atr_mult, self._min_sp, self._max_sp)
+                or self._min_sp
+            )
+        else:
+            self._grid_spacing = 0.0
         self._grid_bias    = 1.0   # 重置为 RANGING 默认值，防止 TRENDING bias 残留
         self._cooldown_until = max(getattr(self, "_cooldown_until", 0.0), now + cooldown)
         log.info("[grid] 网格重置: %s | 冷静期 %.0fs", reason, cooldown)
