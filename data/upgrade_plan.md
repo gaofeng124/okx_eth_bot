@@ -1,77 +1,78 @@
 # ETH量化系统升级计划
 
-## 本次（2026-05-05 第八十七轮）完成
+## 本次（2026-05-05 第八十八轮）完成
 
-### 修复：_position_sync_check positive-diff 路径缺少 record_analysis 监控事件
+### 修复：_position_sync_check 中 ENTRY_LIVE 撤单失败时孤立订单风险
 
 **问题：**
-`_position_sync_check` 有两条路径：
-- `diff < -threshold`（幽灵仓）：第86轮已添加 `record_analysis("ghost_position_sync", ...)`
-- `diff > threshold`（未追踪仓位补录）：**缺少 record_analysis**，只有 log.warning/log.info，无法在 analysis.jsonl 中统计触发频率
+`_position_sync_check` 的 untracked 补录路径（diff > threshold）在为 ENTRY_LIVE slot 撤单时：
+```python
+self._cancel_order(s.entry_order_id)  # 返回值被丢弃
+s.entry_order_id = ""                  # 无论成功失败都清空
+# 然后直接 s.state = HOLDING
+```
+若 `_cancel_order` 返回 False（网络抖动或 OKX API 拒绝），该 slot 的：
+- 真实订单仍在 OKX 交易所活跃（ENTRY_LIVE 状态）
+- 内部 `entry_order_id` 已清空（失去追踪）
+- slot 状态设为 HOLDING（以为已成交）
+
+**后果**：若该孤立订单后来成交，fill 回调找不到对应 slot，导致持仓量计算偏差，PnL 记录错误。
 
 **修复：**
-在 `_update_tp()` 调用前插入：
+检查 `_cancel_order` 返回值；若为 False，记录 warning 并 `continue` 跳过此 slot，保留其 ENTRY_LIVE 状态不变：
 ```python
-try:
-    from quant.detailed_daily_log import record_analysis
-    record_analysis(
-        "untracked_position_sync",
-        exchange_sz=exchange_sz,
-        internal_held=internal_held,
-        diff=round(diff, 4),
-        est_entry=round(est_entry, 2),
-        daily_pnl_realized=round(self._pnl.realized, 4),
-    )
-except Exception:
-    pass
+cancelled = self._cancel_order(s.entry_order_id)
+if not cancelled:
+    log.warning("[grid] untracked补录：slot撤单失败 oid=%s，跳过此slot防止孤立订单", s.entry_order_id)
+    continue
+s.entry_order_id = ""
 ```
 
-**验证 _replay_tp_history（P1 第二项，已确认无问题）：**
-- 两层 `except Exception: pass/continue` 均为主动防御设计，非意外吞错
-- `ts_wall` 格式：`datetime.now().isoformat(timespec="milliseconds")` → 如 `"2026-05-05T07:00:00.123"`，Python 3.11 `fromisoformat` 可正确解析，无时区问题
-- `event != "fill_tp"` 过滤条件覆盖所有旧格式，静默跳过合理
-- 冷启动无历史时 EWMA 使用默认值，行为正确
-
 **效果预期：**
-- analysis.jsonl 中正/负两个方向的持仓同步事件均有记录
-- 实盘可统计 untracked_position_sync vs ghost_position_sync 频率，判断 API/内部一致性趋势
+- 撤单失败时 slot 保持 ENTRY_LIVE 不变，fill 回调仍能正确匹配
+- log.warning 可在日志中检索 "untracked补录：slot撤单失败"，监控 API 可靠性
+
+### 确认（无需修改）：_update_tp 首次 0→正值 total_held 路径
+- `_vwap_value += est_entry * diff` → `_vwap = est_entry` 正确初始化
+- `_tp_spacing_sign()` 返回 ±1.0，TP 方向由 `_is_short` 决定，逻辑正确
+- `_cancel_order` 本身有 try/except，不会抛出异常到调用方
 
 ---
 
 ## 历史完成（节选）
 
+### 第八十七轮（2026-05-05）
+- [x] grid_pro.py: _position_sync_check positive-diff 路径补充 record_analysis('untracked_position_sync') 监控事件
+
 ### 第八十六轮（2026-05-05）
-- [x] grid_pro.py: 修复 _position_sync_check 负差路径 ratio 变量定义但未使用，改为等比缩减 slot fill_sz，PnL 计算精准
+- [x] grid_pro.py: _position_sync_check 负差路径 ratio 变量定义但未使用，改为等比缩减 slot fill_sz
 - [x] grid_pro.py: 新增 ghost_position_sync 监控事件
 
 ### 第八十五轮（2026-05-05）
 - [x] grid_pro.py: _reset_grid_state 根治 spacing 清零问题
 - [x] grid_pro.py: _emergency_close 补录 TP partial fill PnL
 
-### 第八十四轮（2026-05-04）
-- [x] grid_pro.py: 修复 _maybe_trail_tp spacing_abs=0 零利润平仓 bug
-
 ---
 
 ## 待解决问题（按优先级）
 
-- [ ] P1: round88: 检查 `_update_tp` 在 total_held 从 0→正值（首次 untracked 补录）场景是否正确设置 TP 方向和价格（触发条件：机器人重启后 API 先返回持仓但 grid 尚未初始化）
-- [ ] P1: round88: 检查 `_cancel_order`（line ~2384-2386）在 ENTRY_LIVE slot 撤单失败时是否有 fallback：若撤单 API 失败，slot 状态应回退还是继续补录？当前无 try/except
+- [ ] P1: round89: 检查 _maybe_trail_tp 在 _grid_spacing 从 0 恢复后首次触发时，_last_tp_trail_ts 节流是否导致 trail 窗口延迟（spacing=0 会 return，恢复后第一次 trail 可能被 20-30s 节流拦截）
+- [ ] P1: round89: 检查 _emergency_close / circuit_break 触发后是否清空所有 slot 状态（包括 ENTRY_LIVE、HOLDING），避免重启后幽灵 slot 残留
 - [ ] P2: 评估 _refresh_fgi/_refresh_funding REST fallback 在沙盒环境 timeout 代价（均有 except 兜底，不影响主策略；实盘无此问题）
 - [ ] P3: analysis.jsonl 中记录每次 position_sync_check 的 diff 摘要（不仅在异常时，也在正常时每N次记录一次），便于长期 API 一致性监控
 
 ## 下次优先行动
 
-**round88：**
-1. 读取 `_update_tp` 实现（搜索 `def _update_tp`），确认当 `self._total_held > 0` 且之前 `== 0` 时是否正确初始化 TP 订单方向
-2. 读取 `_cancel_order` 调用（line 2384-2386 附近），检查 untracked 补录时撤 ENTRY_LIVE 单失败的处理逻辑
+**round89：**
+1. 搜索 `def _maybe_trail_tp` 附近的 `_last_tp_trail_ts` 重置逻辑，确认 spacing 从 0 恢复时是否需要重置节流时间戳
+2. 搜索 `def _emergency_close` 和 circuit_break 相关代码，检查 slot 状态清理完整性
 
 ## 系统评估
 - **策略有效性**：9/10
-  - 87 轮迭代，双向持仓同步监控完整（ghost + untracked 均有 analysis.jsonl 记录）
+  - 88 轮迭代，孤立订单风险已修复
+  - untracked 补录路径：撤单失败时正确跳过，不污染 slot 状态
   - core 链条：entry→fill→vwap→TP→trail→timeout→emergency→circuit_break 全覆盖
-  - _replay_tp_history 冷启动恢复路径已验证无 exception 吞掉问题
 - **当前主要风险**：
   1. 沙盒网络受限，实盘逻辑无法通过 API 调用验证
-  2. untracked 路径撤 ENTRY_LIVE 单无 try/except，API 失败可能导致 slot 状态不一致
-- **累计运行轮次**：87
+  2. _maybe_trail_tp 节流在 spacing 恢复后可能造成短暂 trail 盲区
+- **累计运行轮次**：88

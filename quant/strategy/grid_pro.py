@@ -2380,9 +2380,15 @@ class GridProStrategy(TickStrategy):
                         break
                     if s.state == _S.HOLDING:
                         continue
-                    # 先撤掉 ENTRY_LIVE 挂单
+                    # 先撤掉 ENTRY_LIVE 挂单；撤单失败则跳过此 slot 避免孤立订单
                     if s.state == _S.ENTRY_LIVE and s.entry_order_id:
-                        self._cancel_order(s.entry_order_id)
+                        cancelled = self._cancel_order(s.entry_order_id)
+                        if not cancelled:
+                            log.warning(
+                                "[grid] untracked补录：slot撤单失败 oid=%s，跳过此slot防止孤立订单",
+                                s.entry_order_id,
+                            )
+                            continue
                         s.entry_order_id = ""
                     assign = min(per_slot, untracked)
                     s.state = _S.HOLDING
