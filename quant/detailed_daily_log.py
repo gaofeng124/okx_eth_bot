@@ -33,6 +33,7 @@ from quant.settings import (
 )
 
 _lock = threading.Lock()
+_tick_throttle_lock = threading.Lock()  # 专用于 record_tick 节流：check+update 原子化
 _run_id: str = ""
 _date_str: str = ""
 _base_dir: Path | None = None
@@ -211,9 +212,11 @@ def record_tick(
         return
     now = time.time()
     min_iv = float(DETAILED_LOG_TICK_MIN_SEC or 0.0)
-    if min_iv > 0.0 and (now - _last_tick_wall) < min_iv:
-        return
-    _last_tick_wall = now
+    if min_iv > 0.0:
+        with _tick_throttle_lock:
+            if (now - _last_tick_wall) < min_iv:
+                return
+            _last_tick_wall = now
     mid = (float(bid) + float(ask)) / 2.0 if bid and ask else float(last)
     payload: dict[str, Any] = {
         "outcome": outcome,

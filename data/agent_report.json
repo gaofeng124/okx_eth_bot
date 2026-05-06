@@ -1,19 +1,23 @@
 {
-  "ran_at": "2026-05-06 12:00 UTC",
-  "eth_price": "N/A (外网不可达)",
+  "ran_at": "2026-05-06 13:00 UTC",
+  "eth_price": "N/A (沙盒网络隔离)",
   "eth_24h_change_pct": "N/A",
-  "fear_greed_index": "N/A (外网不可达)",
-  "funding_rate": "N/A (外网不可达)",
-  "market_summary": "沙盒环境无法访问外部API，市场数据不可用。基于代码审计做逻辑优化。",
-  "decision": "修复 detailed_daily_log._write()：将 datetime.now() 先捕获后，把 _ensure_day_dir() 移入锁内并传入 day_key，消除午夜边界 ts_wall 与目录不一致的 TOCTOU 竞争；同时接受 day_key 参数的 _ensure_day_dir() 兼容旧调用路径",
+  "fear_greed_index": "N/A (沙盒网络隔离)",
+  "funding_rate": "N/A",
+  "market_summary": "沙盒环境无法访问外部API，网络完全隔离。市场数据不可用，但代码升级正常进行。",
+  "decision": "修复两处P2问题：(1) detailed_daily_log.record_tick节流竞争：引入_tick_throttle_lock将check+update原子化；(2) grid_pro._refresh_fgi和_check_phase4_trend_guard改为后台daemon线程，消除最多5s/2s的主循环阻塞",
   "param_changes": [],
   "code_changes": [
     {
       "file": "quant/detailed_daily_log.py",
-      "summary": "_write() 先捕获 datetime.now() 派生 day_key，_ensure_day_dir(day_key) 移入锁内，消除午夜 ts_wall 与文件目录跨天不一致的 TOCTOU 竞争；_ensure_day_dir() 新增可选 day_key 参数保持兼容"
+      "summary": "新增_tick_throttle_lock，将record_tick节流检查+更新包在同一锁内，防止多线程并发双写tick"
+    },
+    {
+      "file": "quant/strategy/grid_pro.py",
+      "summary": "_refresh_fgi和_check_phase4_trend_guard改为daemon线程异步执行HTTP请求，主循环不再被阻塞最多5s/2s"
     }
   ],
-  "risk_notes": "沙盒外网不可达，REST fallback（_refresh_fgi / _refresh_funding）每次超时仍阻塞主循环2-5秒，但均有节流保护（≥5min/10min间隔），生产影响有限",
-  "next_focus": "round93: 验证 _write 修复在跨天场景下的行为；检查 record_tick 中 _last_tick_wall 节流未在锁内保护的竞争（多线程场景）；评估 REST fallback 改为后台线程的收益",
-  "round_number": 92
+  "risk_notes": "P4 trend guard降级逻辑在后台线程中调用pkill，若主线程同时写入数据可能有文件写入竞争，但概率极低（10min间隔，pkill触发reboot）",
+  "next_focus": "round94: 评估_position_sync_check diff漂移趋势（已有position_sync_ok事件可分析），以及全面扫描是否还有其他同步阻塞HTTP调用点",
+  "round_number": 93
 }

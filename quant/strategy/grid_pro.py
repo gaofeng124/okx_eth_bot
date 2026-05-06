@@ -2205,24 +2205,30 @@ class GridProStrategy(TickStrategy):
     # ══════════════════════════════════════════════════════════════════════════
 
     def _refresh_fgi(self, now: float) -> None:
-        """每小时从 alternative.me 获取一次恐贪指数，失败时保留上次缓存。"""
+        """每小时从 alternative.me 获取一次恐贪指数，后台线程执行不阻塞主循环。"""
         if now - self._last_fgi_ts < 3600.0:
             return
-        self._last_fgi_ts = now
-        try:
-            import urllib.request as _ur, json as _json
-            with _ur.urlopen(
-                "https://api.alternative.me/fng/?limit=1", timeout=5
-            ) as r:
-                d = _json.loads(r.read())["data"][0]
-                self._fear_greed_index = int(d["value"])
-                log.info(
-                    "[grid] 恐贪指数更新: %d (%s)",
-                    self._fear_greed_index, d["value_classification"],
-                )
-        except Exception as e:
-            self._last_fgi_ts = now - 3300.0  # 失败后5min重试（而非等1小时）
-            log.debug("[grid] 恐贪指数获取失败（缓存%d，5min后重试）: %s", self._fear_greed_index, e)
+        self._last_fgi_ts = now  # 立即更新防重入，失败时在线程内回退到 now-3300
+
+        import threading as _thr
+
+        def _fetch(_now: float = now) -> None:
+            try:
+                import urllib.request as _ur, json as _json
+                with _ur.urlopen(
+                    "https://api.alternative.me/fng/?limit=1", timeout=5
+                ) as r:
+                    d = _json.loads(r.read())["data"][0]
+                    self._fear_greed_index = int(d["value"])
+                    log.info(
+                        "[grid] 恐贪指数更新: %d (%s)",
+                        self._fear_greed_index, d["value_classification"],
+                    )
+            except Exception as e:
+                self._last_fgi_ts = _now - 3300.0  # 失败后5min重试（而非等1小时）
+                log.debug("[grid] 恐贪指数获取失败（缓存%d，5min后重试）: %s", self._fear_greed_index, e)
+
+        _thr.Thread(target=_fetch, daemon=True, name="fgi-refresh").start()
 
     # ══════════════════════════════════════════════════════════════════════════
     # Phase 4 趋势日守卫（主人 2026-04-21 22:15 批准 B 激进版）
@@ -2232,66 +2238,69 @@ class GridProStrategy(TickStrategy):
         """
         Phase 4（GRID_LEVELS=6）模式下每 10min 检查近 4h 趋势。
         若 |delta_4h| > 1.5% → 自动降回 Phase 3（.env 改 GRID_LEVELS=5 + pkill）。
-
-        原因：90% 利用率 + 单边趋势 = 每 1% 逆向 = 9% 账户回撤。
-        grid 策略依赖震荡，趋势日应自动降级避免爆仓。
+        后台线程执行，主循环零阻塞。
         """
         if not self._p4_trend_guard_enabled:
             return
         if now - self._last_p4_guard_ts < 600.0:  # 每 10min 一次
             return
-        self._last_p4_guard_ts = now
+        self._last_p4_guard_ts = now  # 立即更新防重入
 
-        try:
-            import urllib.request as _ur, json as _json
-            with _ur.urlopen(
-                "https://www.okx.com/api/v5/market/candles"
-                "?instId=ETH-USDT-SWAP&bar=15m&limit=16", timeout=2
-            ) as r:
-                candles = _json.loads(r.read())["data"]
-            if len(candles) < 16:
-                return
-            last_close = float(candles[0][4])
-            first_close = float(candles[-1][4])
-            delta_pct = (last_close - first_close) / first_close * 100
+        import threading as _thr
 
-            if abs(delta_pct) > 1.5:
-                # 趋势日：自动降回 Phase 3
-                log.warning(
-                    "[grid][P4-GUARD] 近 4h delta=%.2f%% 突破 1.5%% 阈值，"
-                    "自动降回 Phase 3 (GRID_LEVELS 6→5) + 邮件 [异动]",
-                    delta_pct,
-                )
-                import subprocess
-                from pathlib import Path as _Path
-                _root = _Path(self._data_dir).parent
-                _env_path = str(_root / ".env")
-                subprocess.run(
-                    ["sed", "-i.bak",
-                     "s/^GRID_LEVELS=.*/GRID_LEVELS=5/",
-                     _env_path],
-                    check=False,
-                )
-                subprocess.run(
-                    ["rm", "-f", f"{_env_path}.bak"],
-                    check=False,
-                )
-                # 移除 phase4 标记，记录降级时间
-                _data = _Path(self._data_dir)
-                subprocess.run(
-                    ["rm", "-f", str(_data / ".phase4_applied")],
-                    check=False,
-                )
-                try:
-                    (_data / ".p4_downgraded").write_text(
-                        f"降级时间 {time.strftime('%Y-%m-%d %H:%M:%S')} delta_4h={delta_pct:.2f}%"
+        def _check() -> None:
+            try:
+                import urllib.request as _ur, json as _json
+                with _ur.urlopen(
+                    "https://www.okx.com/api/v5/market/candles"
+                    "?instId=ETH-USDT-SWAP&bar=15m&limit=16", timeout=2
+                ) as r:
+                    candles = _json.loads(r.read())["data"]
+                if len(candles) < 16:
+                    return
+                last_close = float(candles[0][4])
+                first_close = float(candles[-1][4])
+                delta_pct = (last_close - first_close) / first_close * 100
+
+                if abs(delta_pct) > 1.5:
+                    # 趋势日：自动降回 Phase 3
+                    log.warning(
+                        "[grid][P4-GUARD] 近 4h delta=%.2f%% 突破 1.5%% 阈值，"
+                        "自动降回 Phase 3 (GRID_LEVELS 6→5) + 邮件 [异动]",
+                        delta_pct,
                     )
-                except Exception:
-                    pass
-                # 触发 watchdog 重启
-                subprocess.run(["pkill", "-f", "run_strategy.py"], check=False)
-        except Exception as e:
-            log.debug("[grid][P4-GUARD] 趋势日检查失败（不影响主策略）: %s", e)
+                    import subprocess
+                    from pathlib import Path as _Path
+                    _root = _Path(self._data_dir).parent
+                    _env_path = str(_root / ".env")
+                    subprocess.run(
+                        ["sed", "-i.bak",
+                         "s/^GRID_LEVELS=.*/GRID_LEVELS=5/",
+                         _env_path],
+                        check=False,
+                    )
+                    subprocess.run(
+                        ["rm", "-f", f"{_env_path}.bak"],
+                        check=False,
+                    )
+                    # 移除 phase4 标记，记录降级时间
+                    _data = _Path(self._data_dir)
+                    subprocess.run(
+                        ["rm", "-f", str(_data / ".phase4_applied")],
+                        check=False,
+                    )
+                    try:
+                        (_data / ".p4_downgraded").write_text(
+                            f"降级时间 {time.strftime('%Y-%m-%d %H:%M:%S')} delta_4h={delta_pct:.2f}%"
+                        )
+                    except Exception:
+                        pass
+                    # 触发 watchdog 重启
+                    subprocess.run(["pkill", "-f", "run_strategy.py"], check=False)
+            except Exception as e:
+                log.debug("[grid][P4-GUARD] 趋势日检查失败（不影响主策略）: %s", e)
+
+        _thr.Thread(target=_check, daemon=True, name="p4-trend-guard").start()
 
     # ══════════════════════════════════════════════════════════════════════════
     # 持仓同步校验
