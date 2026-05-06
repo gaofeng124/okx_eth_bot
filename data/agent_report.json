@@ -1,19 +1,19 @@
 {
-  "ran_at": "2026-05-05 09:00 UTC",
-  "eth_price": "N/A (sandbox网络受限)",
+  "ran_at": "2026-05-06 10:00 UTC",
+  "eth_price": "N/A (沙盒网络受限)",
   "eth_24h_change_pct": "N/A",
-  "fear_greed_index": "N/A (API不可达)",
+  "fear_greed_index": "N/A (外部API不可达)",
   "funding_rate": "N/A",
-  "market_summary": "沙盒环境外网受限，无法获取实时市场数据。根据历史轮次，系统已运行88轮，核心逻辑链路健全，本轮专注于修复 _maybe_trail_tp 节流窗口残留问题。",
-  "decision": "修复 _maybe_trail_tp 节流延迟：spacing 从 0 恢复时重置 _last_tp_trail_ts，消除最多 20-30s 的 trail 盲区",
+  "market_summary": "外部API均不可达（沙盒隔离环境）。本轮聚焦代码审查：P1任务已核实EWMA halflife配置完全正确（RANGING=900s/TRENDING=2700s，分 bucket 隔离，is_ranging 参数正确传递），无需修改。",
+  "decision": "P3改进：_position_sync_check 新增 _pos_sync_count 计数器，每30次正常同步（约5分钟）写一条 position_sync_ok 事件到 analysis.jsonl，实现长期 API 一致性监控无需等待异常触发",
   "param_changes": [],
   "code_changes": [
     {
       "file": "quant/strategy/grid_pro.py",
-      "summary": "_reset_grid_state 和 _position_sync_check 的 spacing 恢复路径中各追加 _last_tp_trail_ts=0.0，使 trail 在 spacing 恢复后可立即检查而不被上次触发的节流窗口阻塞"
+      "summary": "__init__ 新增 _pos_sync_count 计数器；_position_sync_check 正常路径每30次记录 position_sync_ok 到 analysis.jsonl"
     }
   ],
-  "risk_notes": "沙盒网络受限，实盘 API 逻辑无法验证；_last_tp_trail_ts 重置为 0 后若 spacing 频繁切换（罕见），trail 检查频率会短暂提升，但因触发条件（>1格宽偏移）较严格，实际 API 调用不会暴增",
-  "next_focus": "round90: 检查 _adaptive_trail_trigger / _adaptive_trail_offset 的 EWMA 权重衰减在 TRENDING 模式下是否正确使用 2700s 半衰期（当前代码中确认 _EWMA_HALFLIFE_TRENDING 常量值）",
-  "round_number": "89"
+  "risk_notes": "沙盒网络受限导致无法验证实盘API调用；position_sync_ok 记录调用 record_analysis 有 try/except 兜底，不影响主策略执行",
+  "next_focus": "round91: 检查 analysis.jsonl 中 position_sync_ok 事件是否正常写入（实盘环境验证）；评估 _replay_tp_history 中是否应对 records[-40:] 按 regime 分开取样上限（若TRENDING记录极多会挤占RANGING配额）",
+  "round_number": "90"
 }

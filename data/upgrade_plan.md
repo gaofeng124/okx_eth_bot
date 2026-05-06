@@ -1,80 +1,72 @@
 # ETH量化系统升级计划
 
-## 本次（2026-05-05 第八十九轮）完成
+## 本次（2026-05-06 第九十轮）完成
 
-### 修复：_maybe_trail_tp 节流在 spacing 恢复后的短暂盲区
+### P1 验证：EWMA halflife 配置审查（结论：正确，无需修改）
 
-**问题分析：**
-`_maybe_trail_tp` 开头有 20s（RANGING）/ 30s（TRENDING）节流：
-```python
-if now - self._last_tp_trail_ts < _min_trail_iv:
-    return
-```
-`_last_tp_trail_ts` 仅在 trail 触发时更新。若：
-1. Trail 在 T=0 触发，设 `_last_tp_trail_ts = T`
-2. T+1s：spacing 被 `_reset_grid_state` 清零（重置时 total_held=0，或进入清仓路径）
-3. T+5s：spacing 从另一条路径恢复（total_held > 0 后重算）
-4. T+11s：`_maybe_trail_tp` 检查：`11 - 0 = 11 < 20` → 被额外阻塞 9s
+**审查内容：**
+- `_ewma_profit_avg`（line 1660）：RANGING=900s，TRENDING=2700s，正确
+- `_tp_profits_ranging` / `_tp_profits_trending`：各自 deque(maxlen=20)，在 `__init__` 初始化，互不干扰
+- `_adaptive_trail_trigger` / `_adaptive_trail_offset`：均调用 `self._ewma_profit_avg()`，该函数内部自行按当前 regime 选择 halflife，无需外部传参
+- `is_ranging` 参数：调用处（line 1572/1576）正确传入 `_is_ranging = self._current_regime == Regime.RANGING`
+- `_tp_current_bucket` 属性：按 `_current_regime` 路由到正确 bucket（line 1676-1678）
+- `_replay_tp_history`：从 analysis.jsonl 重播，按 TRENDING_UP/TRENDING_DOWN 路由到 trending bucket，其余归 ranging，逻辑正确
 
-最坏情形：trail 刚触发，spacing 立即清零再恢复，最多额外阻塞 20-30s。
-在此窗口内，TP 仍在原位，但无法追踪价格延伸，损失锁利机会。
+**结论：** round89 的担忧已消除，实现无误。
+
+### P3 实施：_position_sync_check 正常路径定期监控记录
+
+**问题：**
+`_position_sync_check` 每10s运行一次，但只在持仓不一致（`untracked_position_sync`/`ghost_position_sync`）时才写 analysis.jsonl 记录。长期运行时无法判断同步是否正常工作、差值是否有趋势性漂移。
 
 **修复：**
-在两处 spacing 恢复赋值后追加 `self._last_tp_trail_ts = 0.0`：
-1. `_reset_grid_state`（line ~1934）：`total_held > 0` 分支恢复 spacing 后
-2. `_position_sync_check`（line ~2369）：`_grid_spacing <= 0` 补录恢复 spacing 后
+1. `__init__` 新增 `self._pos_sync_count: int = 0`
+2. `_position_sync_check` else 路径（diff 在阈值内）：`_pos_sync_count += 1`，每30次写一条 `position_sync_ok` 事件（exchange_sz, internal_held, diff, count），约每5分钟一次
 
 **效果预期：**
-- spacing 恢复后 trail 可立即（本 tick）检查，消除最多 20-30s 盲区
-- 实际多出的 API 调用极少：触发条件仍需 `mid > tp + 1格宽`，不会导致 API 频繁调用
-
-### 已关闭的 P1 问题（round89 调查结论）
-
-**_emergency_close / circuit_break 幽灵 slot 问题：已关闭**
-- `_slots` 在 `__init__` 中始终重新初始化（全 EMPTY），重启后无跨会话幽灵 slot
-- 会话内：`_close_ok=False` 时设 `_emergency_close_failed_ts`；60s 后 tick 循环调用
-  `_emergency_close(circuit_break_retry)` 重试；重试成功后调用 `_reset_grid()` 清空所有 slot
-- 逻辑完整，无需修改
+- 每小时约12条 position_sync_ok 记录，每天约288条
+- 可回溯检查 API 持仓是否有规律性漂移，无需依赖异常事件
+- try/except 兜底，record_analysis 异常不影响主策略
 
 ---
 
 ## 历史完成（节选）
 
+### 第八十九轮（2026-05-05）
+- [x] grid_pro.py: _maybe_trail_tp 节流在 spacing 恢复后的短暂盲区修复（_reset_grid_state 和 _position_sync_check 两处 spacing 恢复后重置 _last_tp_trail_ts = 0.0）
+
 ### 第八十八轮（2026-05-05）
-- [x] grid_pro.py: _position_sync_check untracked 补录路径：_cancel_order 返回值被忽略，撤单失败时 slot 错误设为 HOLDING；改为撤单失败时 continue 跳过，保留 ENTRY_LIVE 状态
+- [x] grid_pro.py: _position_sync_check untracked 补录路径：_cancel_order 返回值被忽略改为撤单失败时 continue
 
 ### 第八十七轮（2026-05-05）
-- [x] grid_pro.py: _position_sync_check positive-diff 路径补充 record_analysis('untracked_position_sync') 监控事件
-
-### 第八十六轮（2026-05-05）
-- [x] grid_pro.py: _position_sync_check 负差路径 ratio 变量定义但未使用，改为等比缩减 slot fill_sz
-- [x] grid_pro.py: 新增 ghost_position_sync 监控事件
-
-### 第八十五轮（2026-05-05）
-- [x] grid_pro.py: _reset_grid_state 根治 spacing 清零问题
-- [x] grid_pro.py: _emergency_close 补录 TP partial fill PnL
+- [x] grid_pro.py: _position_sync_check positive-diff 路径补充 record_analysis('untracked_position_sync')
 
 ---
 
 ## 待解决问题（按优先级）
 
-- [ ] P1: round90: 检查 _adaptive_trail_trigger / _adaptive_trail_offset 的 EWMA 权重衰减 — 确认 TRENDING 模式使用 _EWMA_HALFLIFE_TRENDING 常量（应为 2700s），RANGING 使用 900s；检查常量定义位置和是否正确传入
-- [ ] P2: 评估 _refresh_fgi/_refresh_funding REST fallback 在沙盒环境 timeout 代价（均有 except 兜底，不影响主策略；实盘无此问题）
-- [ ] P3: analysis.jsonl 中记录每次 position_sync_check 的 diff 摘要（不仅在异常时，也在正常时每N次记录一次），便于长期 API 一致性监控
+- [ ] P1: round91: 实盘验证 position_sync_ok 事件是否正常写入 analysis.jsonl
+- [ ] P2: 评估 _replay_tp_history 中 records[-40:] 按 regime 分别限制上限的必要性
+  - 场景：若最近40条全是 TRENDING 记录，RANGING bucket 为空，restart 后 RANGING 自适应失效
+  - 建议改法：分别取 ranging_records[-20:] + trending_records[-20:] 再合并，各 bucket 独立保留
+- [ ] P2: 评估 _refresh_fgi/_refresh_funding REST fallback 在沙盒 timeout 代价
+- [ ] P3: 持续监控 position_sync_ok diff 是否存在趋势性漂移（连续多次 diff>0 可能预示慢漏）
 
 ## 下次优先行动
 
-**round90：**
-1. `grep -n '_EWMA_HALFLIFE\|_ewma_profit_avg\|halflife' quant/strategy/grid_pro.py` — 确认 TRENDING / RANGING 半衰期常量值及传参路径
-2. 检查 `_adaptive_trail_trigger` 和 `_adaptive_trail_offset` 是否正确切换 halflife
-3. 若发现 TRENDING 误用 900s（RANGING halflife），会导致成交稀疏时 EWMA 过快衰减，trail 参数无法积累有效样本
+**round91：**
+1. 实施 _replay_tp_history regime 分别取样改进：
+   - `ranging_recs = [r for r in records if r[2] not in ("TRENDING_UP","TRENDING_DOWN")]`
+   - `trending_recs = [r for r in records if r[2] in ("TRENDING_UP","TRENDING_DOWN")]`
+   - 分别 `-20:` 截取后合并重播，消除一个 regime 占满配额的问题
+2. 检查 analysis.jsonl 写入路径是否在每日目录下正确轮转（换天后路径是否自动切换）
 
 ## 系统评估
 - **策略有效性**：9/10
-  - 89 轮迭代，trail 节流盲区已修复
-  - 核心链条：entry→fill→vwap→TP→trail→timeout→emergency→circuit_break 全覆盖
-  - spacing 恢复后 trail 可立即响应，顺势行情锁利能力提升
+  - 90 轮迭代，核心链条已完整覆盖
+  - P1 EWMA halflife 验证完毕，实现无误
+  - position_sync 现有正常/异常双路径记录
 - **当前主要风险**：
-  1. 沙盒网络受限，实盘逻辑无法通过 API 调用验证
-  2. EWMA 半衰期配置有待确认（下轮 P1）
-- **累计运行轮次**：89
+  1. 沙盒环境无法验证实盘 API 调用
+  2. _replay_tp_history 存在 regime 采样偏斜风险（待 round91 修复）
+- **累计运行轮次**：90

@@ -457,6 +457,7 @@ class GridProStrategy(TickStrategy):
         self._last_bid:      float = 0.0   # 最新 bid（用于下单前校验价格不越叉）
         self._last_sync_ts:  float = 0.0
         self._last_pos_sync: float = 0.0
+        self._pos_sync_count: int = 0       # 正常同步计数器，每30次写一条监控记录（约5分钟）
         self._sync_pending_ts: float = 0.0  # mid=0 时延迟对账的时间戳；bid 恢复后强制重试
         self._last_fund_ts:  float = 0.0
         self._last_status_ts: float = 0.0
@@ -2457,6 +2458,22 @@ class GridProStrategy(TickStrategy):
                     "[grid] 幽灵仓等比缩减完成：total_held=%.1f ratio=%.3f",
                     self._total_held, ratio,
                 )
+        else:
+            # 持仓一致（diff 在阈值内）：每30次（约5分钟）写一条 position_sync_ok 事件，
+            # 供长期 API 一致性监控，无需等待异常触发才有记录
+            self._pos_sync_count += 1
+            if self._pos_sync_count % 30 == 0:
+                try:
+                    from quant.detailed_daily_log import record_analysis
+                    record_analysis(
+                        "position_sync_ok",
+                        exchange_sz=exchange_sz,
+                        internal_held=internal_held,
+                        diff=round(diff, 4),
+                        count=self._pos_sync_count,
+                    )
+                except Exception:
+                    pass
 
     # ══════════════════════════════════════════════════════════════════════════
     # 定期状态日志
