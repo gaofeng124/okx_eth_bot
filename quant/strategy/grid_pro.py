@@ -1726,17 +1726,18 @@ class GridProStrategy(TickStrategy):
         if not records:
             return
         records.sort(key=lambda x: x[0])
-        # 取最近 40 条（每个 bucket 各 maxlen=20，合计上限）
-        for ts, ps, regime_str in records[-40:]:
-            if regime_str in ("TRENDING_UP", "TRENDING_DOWN"):
-                self._tp_profits_trending.append((ts, ps))
-            else:
-                self._tp_profits_ranging.append((ts, ps))
+        # 按 regime 分别截取最近 20 条，避免一个 regime 占满 40 条配额导致另一 bucket 为空
+        ranging_recs  = [(ts, ps) for ts, ps, r in records if r not in ("TRENDING_UP", "TRENDING_DOWN")]
+        trending_recs = [(ts, ps) for ts, ps, r in records if r in ("TRENDING_UP", "TRENDING_DOWN")]
+        for ts, ps in ranging_recs[-20:]:
+            self._tp_profits_ranging.append((ts, ps))
+        for ts, ps in trending_recs[-20:]:
+            self._tp_profits_trending.append((ts, ps))
         n_r = len(self._tp_profits_ranging)
         n_t = len(self._tp_profits_trending)
         log.info(
-            "[grid] 冷启动恢复 TP 历史: 找到 %d 条，ranging=%d trending=%d，EWMA ranging%s trending%s",
-            len(records), n_r, n_t,
+            "[grid] 冷启动恢复 TP 历史: 总计 %d 条(ranging原始%d/trending原始%d)，replay ranging=%d trending=%d，EWMA ranging%s trending%s",
+            len(records), len(ranging_recs), len(trending_recs), n_r, n_t,
             " 即时可用" if n_r >= 5 else " 待更多成交",
             " 即时可用" if n_t >= 5 else " 待更多成交",
         )
