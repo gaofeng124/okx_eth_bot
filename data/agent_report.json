@@ -1,19 +1,19 @@
 {
-  "ran_at": "2026-05-06 11:00 UTC",
-  "eth_price": "N/A (API restricted)",
+  "ran_at": "2026-05-06 12:00 UTC",
+  "eth_price": "N/A (外网不可达)",
   "eth_24h_change_pct": "N/A",
-  "fear_greed_index": "N/A (API restricted)",
-  "funding_rate": "N/A (API restricted)",
-  "market_summary": "外部API本轮不可访问，使用上轮已知状态。系统持续运行，策略逻辑持续优化中。",
-  "decision": "P2修复：_replay_tp_history 改为按 regime 分别截取最近20条(ranging_recs[-20:]+trending_recs[-20:])，消除一种 regime 近期占主导时另一 bucket 冷启动后 EWMA 失效的采样偏斜问题",
+  "fear_greed_index": "N/A (外网不可达)",
+  "funding_rate": "N/A (外网不可达)",
+  "market_summary": "沙盒环境无法访问外部API，市场数据不可用。基于代码审计做逻辑优化。",
+  "decision": "修复 detailed_daily_log._write()：将 datetime.now() 先捕获后，把 _ensure_day_dir() 移入锁内并传入 day_key，消除午夜边界 ts_wall 与目录不一致的 TOCTOU 竞争；同时接受 day_key 参数的 _ensure_day_dir() 兼容旧调用路径",
   "param_changes": [],
   "code_changes": [
     {
-      "file": "quant/strategy/grid_pro.py",
-      "summary": "_replay_tp_history: 按 regime 分别截最近20条重播，ranging/trending bucket 各自独立保留，避免一个 regime 占满联合配额；日志新增原始条数字段"
+      "file": "quant/detailed_daily_log.py",
+      "summary": "_write() 先捕获 datetime.now() 派生 day_key，_ensure_day_dir(day_key) 移入锁内，消除午夜 ts_wall 与文件目录跨天不一致的 TOCTOU 竞争；_ensure_day_dir() 新增可选 day_key 参数保持兼容"
     }
   ],
-  "risk_notes": "沙盒环境无法验证实盘API调用；position_sync_ok 事件需实盘确认是否正常写入",
-  "next_focus": "round92: 检查 analysis.jsonl 每日目录轮转路径是否在换天后自动切换（换天后路径 daily/<date>/analysis.jsonl 是否正确更新）",
-  "round_number": 91
+  "risk_notes": "沙盒外网不可达，REST fallback（_refresh_fgi / _refresh_funding）每次超时仍阻塞主循环2-5秒，但均有节流保护（≥5min/10min间隔），生产影响有限",
+  "next_focus": "round93: 验证 _write 修复在跨天场景下的行为；检查 record_tick 中 _last_tick_wall 节流未在锁内保护的竞争（多线程场景）；评估 REST fallback 改为后台线程的收益",
+  "round_number": 92
 }

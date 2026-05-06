@@ -60,9 +60,9 @@ def _today_str() -> str:
     return date.today().isoformat()
 
 
-def _ensure_day_dir() -> Path:
+def _ensure_day_dir(day_key: str | None = None) -> Path:
     global _date_str, _base_dir
-    d = _today_str()
+    d = day_key if day_key is not None else _today_str()
     if _date_str != d or _base_dir is None:
         _date_str = d
         _base_dir = Path(DATA_DIR) / "logs" / "daily" / d
@@ -134,17 +134,22 @@ def init_session(*, run_id: str) -> Path | None:
 def _write(channel: str, event: str, payload: dict[str, Any]) -> None:
     if not DETAILED_DAILY_LOG:
         return
-    base = _ensure_day_dir()
-    path = base / f"{channel}.jsonl"
+    # Capture timestamp first so ts_wall and the target day-directory always agree.
+    # Previously _ensure_day_dir() was called outside the lock and datetime.now() inside,
+    # allowing a midnight race where a new-day ts_wall could land in the old day's file.
+    now_dt = datetime.now()
     rec: dict[str, Any] = {
-        "ts_wall": datetime.now().isoformat(timespec="milliseconds"),
+        "ts_wall": now_dt.isoformat(timespec="milliseconds"),
         "run_id": _run_id,
         "channel": channel,
         "event": event,
         **payload,
     }
     line = json.dumps(rec, ensure_ascii=False, default=str) + "\n"
+    day_key = now_dt.date().isoformat()
     with _lock:
+        base = _ensure_day_dir(day_key)
+        path = base / f"{channel}.jsonl"
         with path.open("a", encoding="utf-8") as _fh:
             _fh.write(line)
 
