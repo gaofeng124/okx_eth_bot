@@ -2185,20 +2185,26 @@ class GridProStrategy(TickStrategy):
             self._next_funding_ms = float(nf or 0.0)
             self._last_fund_ts    = now
             return
-        # fallback: runner 未提供时直接 REST 获取，失败保留缓存值（最多1h重试一次）
-        self._last_fund_ts = now
-        try:
-            import urllib.request as _ur, json as _json
-            with _ur.urlopen(
-                f"https://www.okx.com/api/v5/public/funding-rate?instId={self._inst_id}",
-                timeout=5,
-            ) as r:
-                d = _json.loads(r.read())["data"][0]
-                self._funding_rate    = float(d["fundingRate"])
-                self._next_funding_ms = float(d.get("nextFundingTime", 0))
-                log.info("[grid] 资金费率REST自取: %.5f%%", self._funding_rate * 100)
-        except Exception as e:
-            log.debug("[grid] 资金费率REST获取失败（保留缓存%.5f）: %s", self._funding_rate, e)
+        # fallback: runner 未提供时后台线程REST获取，主循环零阻塞（最多1h触发一次）
+        self._last_fund_ts = now  # 立即更新防重入
+        import threading as _thr
+        _inst = self._inst_id
+
+        def _fetch_fr() -> None:
+            try:
+                import urllib.request as _ur, json as _json
+                with _ur.urlopen(
+                    f"https://www.okx.com/api/v5/public/funding-rate?instId={_inst}",
+                    timeout=5,
+                ) as r:
+                    d = _json.loads(r.read())["data"][0]
+                    self._funding_rate    = float(d["fundingRate"])
+                    self._next_funding_ms = float(d.get("nextFundingTime", 0))
+                    log.info("[grid] 资金费率REST自取: %.5f%%", self._funding_rate * 100)
+            except Exception as e:
+                log.debug("[grid] 资金费率REST获取失败（保留缓存%.5f）: %s", self._funding_rate, e)
+
+        _thr.Thread(target=_fetch_fr, daemon=True, name="funding-refresh").start()
 
     # ══════════════════════════════════════════════════════════════════════════
     # 恐贪指数（每小时更新）
@@ -3115,22 +3121,27 @@ class GridProStrategy(TickStrategy):
         # 逻辑：靠近近 1h 高点不利做多（追顶），靠近低点不利做空（追底）
         # 每 5 min 更新 1h 高低缓存（15m × 4 根 = 1h）
         if now - self._price_1h_cache["ts"] > 300:
-            try:
-                import urllib.request as _ur, json as _json
-                with _ur.urlopen(
-                    "https://www.okx.com/api/v5/market/candles"
-                    "?instId=ETH-USDT-SWAP&bar=15m&limit=4", timeout=2
-                ) as r:
-                    _c = _json.loads(r.read())["data"]
+            self._price_1h_cache["ts"] = now  # 立即更新防重入，失败时线程内回退
+            import threading as _thr
+
+            def _fetch_1h(_now: float = now) -> None:
+                try:
+                    import urllib.request as _ur, json as _json
+                    with _ur.urlopen(
+                        "https://www.okx.com/api/v5/market/candles"
+                        "?instId=ETH-USDT-SWAP&bar=15m&limit=4", timeout=2
+                    ) as r:
+                        _c = _json.loads(r.read())["data"]
                     self._price_1h_cache["hi"] = max(float(c[2]) for c in _c)
                     self._price_1h_cache["lo"] = min(float(c[3]) for c in _c)
-                    self._price_1h_cache["ts"] = now
                     self._price_1h_fail_count = 0
-            except Exception:
-                # 指数退避：60s→120s→240s→300s（上限5min），减少持续故障时的阻塞频率
-                self._price_1h_fail_count += 1
-                _retry_delay = min(60.0 * (2 ** (self._price_1h_fail_count - 1)), 300.0)
-                self._price_1h_cache["ts"] = now - (300.0 - _retry_delay)
+                except Exception:
+                    # 指数退避：60s→120s→240s→300s（上限5min），失败时回退 ts 触发早重试
+                    self._price_1h_fail_count += 1
+                    _retry_delay = min(60.0 * (2 ** (self._price_1h_fail_count - 1)), 300.0)
+                    self._price_1h_cache["ts"] = _now - (300.0 - _retry_delay)
+
+            _thr.Thread(target=_fetch_1h, daemon=True, name="price-1h-refresh").start()
         _hi_1h = self._price_1h_cache["hi"]
         _lo_1h = self._price_1h_cache["lo"]
         if _hi_1h > 0 and _lo_1h > 0:

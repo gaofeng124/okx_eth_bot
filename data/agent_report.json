@@ -1,23 +1,23 @@
 {
-  "ran_at": "2026-05-06 13:00 UTC",
-  "eth_price": "N/A (沙盒网络隔离)",
+  "ran_at": "2026-05-06 14:00 UTC",
+  "eth_price": "N/A (网络受限)",
   "eth_24h_change_pct": "N/A",
-  "fear_greed_index": "N/A (沙盒网络隔离)",
-  "funding_rate": "N/A",
-  "market_summary": "沙盒环境无法访问外部API，网络完全隔离。市场数据不可用，但代码升级正常进行。",
-  "decision": "修复两处P2问题：(1) detailed_daily_log.record_tick节流竞争：引入_tick_throttle_lock将check+update原子化；(2) grid_pro._refresh_fgi和_check_phase4_trend_guard改为后台daemon线程，消除最多5s/2s的主循环阻塞",
+  "fear_greed_index": "N/A (网络受限)",
+  "funding_rate": "N/A (网络受限)",
+  "market_summary": "沙盒环境网络受限，无法获取实时行情。基于上轮（第93轮）上下文继续优化：主循环阻塞消除工作收尾，将剩余两处同步HTTP调用完全异步化。",
+  "decision": "将 _refresh_funding fallback 和 _price_1h_cache 更新（每5min）均改为 daemon 线程执行，至此 grid_pro.py 全部4处 urlopen 均在后台线程中，主循环实现真正零阻塞",
   "param_changes": [],
   "code_changes": [
     {
-      "file": "quant/detailed_daily_log.py",
-      "summary": "新增_tick_throttle_lock，将record_tick节流检查+更新包在同一锁内，防止多线程并发双写tick"
+      "file": "quant/strategy/grid_pro.py",
+      "summary": "_refresh_funding fallback HTTP 改为 daemon 线程（threading.Thread name=funding-refresh），消除每1小时最多5s阻塞"
     },
     {
       "file": "quant/strategy/grid_pro.py",
-      "summary": "_refresh_fgi和_check_phase4_trend_guard改为daemon线程异步执行HTTP请求，主循环不再被阻塞最多5s/2s"
+      "summary": "_price_1h_cache 每5min更新（S7价格位置因子）改为 daemon 线程（name=price-1h-refresh），消除每5min最多2s阻塞；失败时线程内回退ts触发指数退避重试"
     }
   ],
-  "risk_notes": "P4 trend guard降级逻辑在后台线程中调用pkill，若主线程同时写入数据可能有文件写入竞争，但概率极低（10min间隔，pkill触发reboot）",
-  "next_focus": "round94: 评估_position_sync_check diff漂移趋势（已有position_sync_ok事件可分析），以及全面扫描是否还有其他同步阻塞HTTP调用点",
-  "round_number": 93
+  "risk_notes": "price-1h-refresh 线程更新缓存存在轻微竞争（dict key更新非原子），但由于只有一个写线程且Python GIL保证dict写原子性，实际无风险",
+  "next_focus": "round95: 检查 runner.py 的 WebSocket 断线重连逻辑是否有阻塞点；扫描 analysis.jsonl 确认 fill 事件是否正常写入",
+  "round_number": 94
 }
